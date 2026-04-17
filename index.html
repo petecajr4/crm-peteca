@@ -140,6 +140,14 @@ function CRMPeteca() {
   const [ticketflowSyncing, setTicketflowSyncing] = useState(false);
   
   const VENDEDORES_TICKETFLOW = ["Denis","Reginaldo","Anderson","Anne","Lex","Emerson","Cassia","Anna","Alisson","Pardal","Tiago"];
+
+  // Vendedores inativos: removidos dos dropdowns (mas mantidos no histórico de vendas)
+  const VENDEDORES_INATIVOS = new Set([
+    "ADSON","BOB","BRUNO GARCIA","CAIQUE","CARLA/ROSE","CIDINHA","FRANCIELE","FRANCIELLE",
+    "GUSTAVO","HENRIQUE","LAJUSTICIA","LETICIA","OSMAR","POLITICA2020","RICARDO PLAY",
+    "SEM VENDEDOR","WALLISON"
+  ]);
+  const filtrarVendedoresAtivos = (lista) => lista.filter(v => !VENDEDORES_INATIVOS.has(String(v||"").toUpperCase().trim()));
   
   const callTicketFlowAPI = async (params) => {
     try {
@@ -3667,7 +3675,7 @@ function CRMPeteca() {
 
           const mesesUnicos = [...new Set(salesFilt.map(v => v.data?.slice(0,7)).filter(Boolean))].sort();
           const cidadesDisp = [...new Set(allSales.map(v => clienteToCidade[v.clienteId]).filter(Boolean))].sort();
-          const vendedoresDisp = [...new Set(allSales.map(v => v.vendedor || "SEM VENDEDOR"))].sort();
+          const vendedoresDisp = filtrarVendedoresAtivos([...new Set(allSales.map(v => v.vendedor || "SEM VENDEDOR"))]).sort();
 
           // Mapa cliente AGRUPADO POR IDE
           const clienteMap = {};
@@ -4266,7 +4274,7 @@ function CRMPeteca() {
           });
 
           const cidadesDisp = [...new Set(allSales.map(v => clienteToCidade[v.clienteId]).filter(Boolean))].sort();
-          const vendedoresDisp = [...new Set(allSales.map(v => v.vendedor || "SEM VENDEDOR"))].sort();
+          const vendedoresDisp = filtrarVendedoresAtivos([...new Set(allSales.map(v => v.vendedor || "SEM VENDEDOR"))]).sort();
 
           // Construir clientes AGRUPADOS POR IDE
           const clienteMap = {};
@@ -4446,14 +4454,14 @@ function CRMPeteca() {
                     }}>{ticketflowSyncing ? "⏳ Sincronizando..." : "🔄 Sync TicketFlow"}</button>
                     <div style={{marginTop:8,display:"flex",gap:6,justifyContent:"flex-end"}}>
                       <button onClick={() => {
-                        const rows = clientesFinal.map((c,i) => `<tr><td>${i+1}</td><td>${c.nome}${c.isIde?' 🔗':''}</td><td>${c.cidade}</td><td>${c.vendedorPrincipal}</td><td>${c.vendas}</td><td>R$ ${c.total.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td><td>${c.diasSemCompra}d</td><td>${c.status}</td><td>R$ ${c.potencialPerdido.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td></tr>`).join('');
-                        printContent(`Abandono & Recuperação (${clientesFinal.length})`, `
+                        const rows = clientesArr.map((c,i) => `<tr><td>${i+1}</td><td>${c.nome}${c.isIde?' 🔗':''}</td><td>${c.cidade}</td><td>${c.vendedorPrincipal}</td><td>${c.vendas}</td><td>R$ ${c.total.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td><td>${c.diasSemCompra}d</td><td>${c.status}</td><td>R$ ${c.potencialPerdido.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td></tr>`).join('');
+                        printContent(`Abandono & Recuperação (${clientesArr.length})`, `
                           <div class="kpi-row"><div class="kpi"><div class="kpi-label">Potencial Perdido</div><div class="kpi-value" style="color:#c00">R$ ${totalPotencialPerdido.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div></div></div>
                           <table><thead><tr><th>#</th><th>Cliente</th><th>Cidade</th><th>Vendedor</th><th>Vendas</th><th>Total</th><th>Dias</th><th>Status</th><th>Potencial</th></tr></thead><tbody>${rows}</tbody></table>`);
                       }} style={{padding:"5px 10px",background:"#1a2744",border:"1px solid #2a3f66",borderRadius:5,color:"#8899bb",fontSize:9,cursor:"pointer"}}>🖨</button>
                       <button onClick={() => {
                         exportCSV('abandono.csv',['#','Cliente','IDE','Cidade','Vendedor','Vendas','Total','Dias sem Compra','Status','Potencial Perdido'],
-                          clientesFinal.map((c,i) => [i+1, c.nome, c.code||'', c.cidade, c.vendedorPrincipal, c.vendas, c.total.toFixed(2), c.diasSemCompra, c.status, c.potencialPerdido.toFixed(2)]));
+                          clientesArr.map((c,i) => [i+1, c.nome, c.code||'', c.cidade, c.vendedorPrincipal, c.vendas, c.total.toFixed(2), c.diasSemCompra, c.status, c.potencialPerdido.toFixed(2)]));
                       }} style={{padding:"5px 10px",background:"#1a2744",border:"1px solid #2a3f66",borderRadius:5,color:"#8899bb",fontSize:9,cursor:"pointer"}}>📊</button>
                     </div>
                   </div>
@@ -4878,7 +4886,7 @@ function CRMPeteca() {
           }
 
           // Vendedores disponíveis
-          const vendedoresDisp = [...new Set(allSales.map(v => v.vendedor || "SEM VENDEDOR"))].sort();
+          const vendedoresDisp = filtrarVendedoresAtivos([...new Set(allSales.map(v => v.vendedor || "SEM VENDEDOR"))]).sort();
           
           // Meses disponíveis
           const mesesDisp = [...new Set(allSales.map(v => v.data?.slice(0,7)).filter(Boolean))].sort();
