@@ -4986,8 +4986,13 @@ function CRMPeteca() {
                           </div>
                         </div>
                         <button onClick={() => {
-                          // Inativar TODOS os membros do grupo
-                          abandonoModal.membros.forEach(mid => updateMod(mid, { a: 0 }));
+                          // Inativar TODOS os membros do grupo usando mods
+                          const newMods = {...mods};
+                          abandonoModal.membros.forEach(mid => {
+                            if (!newMods[mid]) newMods[mid] = {};
+                            newMods[mid].a = 0;
+                          });
+                          saveMods(newMods);
                           setAbandonoModal(null);
                           showToast(`✓ "${abandonoModal.nome}" inativado e oculto de todo o sistema${abandonoModal.isIde ? ` (${abandonoModal.membros.length} CNPJs)` : ""}`);
                         }} style={{
