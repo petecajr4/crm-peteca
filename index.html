@@ -138,6 +138,14 @@ function CRMPeteca() {
   // ============================================================
   const TICKETFLOW_API = 'https://script.google.com/macros/s/AKfycby3EY-mk4FmQZxi3AYUj_pbUPjzDNonrIZPt4aeGttRJYDhpNKT57qfbziptX8Jc2Q/exec';
   const [ticketflowSyncing, setTicketflowSyncing] = useState(false);
+  const [lastSyncAt, setLastSyncAt] = useState(null);
+  const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | ok | error
+  const [syncTick, setSyncTick] = useState(0); // força re-render do label "há Xmin"
+  const lastSyncSilentRef = useRef(0);
+  useEffect(() => {
+    const t = setInterval(() => setSyncTick(x => x+1), 15000);
+    return () => clearInterval(t);
+  }, []);
   
   const VENDEDORES_TICKETFLOW = ["Denis","Reginaldo","Anderson","Anne","Lex","Emerson","Cassia","Anna","Alisson","Pardal","Tiago"];
 
@@ -213,14 +221,15 @@ function CRMPeteca() {
   };
 
   // Sincronizar comentários do TicketFlow → anotações do CRM
-  const syncRecontatosFromTicketFlow = async () => {
-    setTicketflowSyncing(true);
+  const syncRecontatosFromTicketFlow = async (silent = false) => {
+    if (!silent) setTicketflowSyncing(true);
+    setSyncStatus("syncing");
     try {
       const allData = await callTicketFlowAPI({action:'getAll'});
-      if (!allData.ok) { setTicketflowSyncing(false); return 0; }
+      if (!allData.ok) { if (!silent) setTicketflowSyncing(false); setSyncStatus("error"); return 0; }
       
       const recontatoTag = (allData.tags||[]).find(t => t.name === 'Recontato');
-      if (!recontatoTag) { setTicketflowSyncing(false); return 0; }
+      if (!recontatoTag) { if (!silent) setTicketflowSyncing(false); setSyncStatus("ok"); setLastSyncAt(Date.now()); return 0; }
       
       // Filtrar tickets com tag Recontato que vieram do CRM
       const tickets = (allData.tickets||[]).filter(t => {
@@ -285,11 +294,14 @@ function CRMPeteca() {
         try { await window.storage.set(ANOTACOES_STORAGE, JSON.stringify(novasAnot)); } catch(e) {}
       }
       
-      setTicketflowSyncing(false);
+      if (!silent) setTicketflowSyncing(false);
+      setSyncStatus("ok");
+      setLastSyncAt(Date.now());
       return novosComentarios;
     } catch(e) {
       console.error("Erro sync TicketFlow:", e);
-      setTicketflowSyncing(false);
+      if (!silent) setTicketflowSyncing(false);
+      setSyncStatus("error");
       return 0;
     }
   };
@@ -878,6 +890,32 @@ function CRMPeteca() {
     syncRecontatosFromTicketFlow().then(n => {
       if (n > 0) showToast(`🔄 ${n} atualizações do TicketFlow sincronizadas`);
     });
+  }, []);
+
+  // v3: Auto-sync TicketFlow a cada 2 minutos (silencioso)
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if (document.hidden) return; // não sincroniza se a aba estiver em background
+      const n = await syncRecontatosFromTicketFlow(true);
+      if (n > 0) showToast(`🔄 ${n} ${n === 1 ? 'novo comentário' : 'novos comentários'} do TicketFlow`);
+    }, 120000); // 2 minutos
+    return () => clearInterval(interval);
+  }, []);
+
+  // v3: Sync imediato ao voltar para a aba (visibilitychange)
+  useEffect(() => {
+    const onVisibilityChange = async () => {
+      if (!document.hidden) {
+        // Só sincroniza se faz mais de 30s do último sync
+        const agora = Date.now();
+        if (agora - lastSyncSilentRef.current < 30000) return;
+        lastSyncSilentRef.current = agora;
+        const n = await syncRecontatosFromTicketFlow(true);
+        if (n > 0) showToast(`🔄 ${n} ${n === 1 ? 'nova atualização' : 'novas atualizações'} enquanto você estava fora`);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
   }, []);
 
   // v2: Keyboard shortcuts globais (Cmd+K, 1-9 tabs, ESC)
@@ -1581,6 +1619,57 @@ function CRMPeteca() {
 
         {/* FOOTER SIDEBAR */}
         <div style={{padding: sidebarCollapsed ? "10px" : "12px 14px",borderTop:"1px solid rgba(255,255,255,0.05)",display:"flex",flexDirection:"column",gap:8}}>
+          {/* INDICADOR DE SYNC TICKETFLOW */}
+          {(() => {
+            const now = Date.now();
+            const secsAgo = lastSyncAt ? Math.floor((now - lastSyncAt) / 1000) : null;
+            const minsAgo = secsAgo ? Math.floor(secsAgo / 60) : null;
+            const timeLabel = !lastSyncAt ? "—"
+              : secsAgo < 60 ? `${secsAgo}s`
+              : minsAgo < 60 ? `${minsAgo}m`
+              : `${Math.floor(minsAgo/60)}h`;
+            const dotColor = syncStatus === "syncing" ? "#eab308"
+              : syncStatus === "error" ? "#ef4444"
+              : syncStatus === "ok" ? "#22c55e" : "#6b7280";
+            const dotAnim = syncStatus === "syncing" ? "pulse 1s infinite" : "none";
+            const tooltip = syncStatus === "syncing" ? "Sincronizando com TicketFlow..."
+              : syncStatus === "error" ? "Falha ao sincronizar (clique para retry)"
+              : syncStatus === "ok" ? `Sincronizado há ${timeLabel} • Clique para atualizar agora`
+              : "Clique para sincronizar";
+            return (
+              <button onClick={async () => {
+                const n = await syncRecontatosFromTicketFlow();
+                showToast(n > 0 ? `🔄 ${n} ${n === 1 ? 'atualização' : 'atualizações'}` : "✅ Tudo sincronizado");
+              }} disabled={syncStatus === "syncing"}
+                title={tooltip}
+                style={{
+                  width:"100%",
+                  background: syncStatus === "error" ? "rgba(239,68,68,0.08)" : "rgba(255,255,255,0.02)",
+                  border:"1px solid " + (syncStatus === "error" ? "rgba(239,68,68,0.25)" : "rgba(255,255,255,0.06)"),
+                  borderRadius:9,
+                  padding: sidebarCollapsed ? "8px 0" : "8px 12px",
+                  color:"#94a3b8",fontSize:11,cursor: syncStatus === "syncing" ? "default" : "pointer",fontWeight:500,
+                  display:"flex",alignItems:"center",
+                  justifyContent: sidebarCollapsed ? "center" : "space-between",
+                  gap:8
+                }}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{
+                    width:8,height:8,borderRadius:"50%",background:dotColor,
+                    boxShadow:`0 0 8px ${dotColor}`,animation:dotAnim,flexShrink:0
+                  }}/>
+                  {!sidebarCollapsed && (
+                    <span style={{fontSize:10}}>
+                      {syncStatus === "syncing" ? "Sincronizando..."
+                        : syncStatus === "error" ? "Erro sync"
+                        : lastSyncAt ? `TicketFlow · ${timeLabel}` : "Não sincronizado"}
+                    </span>
+                  )}
+                </div>
+                {!sidebarCollapsed && <span style={{fontSize:11,opacity:0.6}}>🔄</span>}
+              </button>
+            );
+          })()}
           {backupDays >= 7 && !sidebarCollapsed && (
             <div style={{
               background:"linear-gradient(135deg,rgba(220,38,38,0.15),rgba(239,68,68,0.1))",
