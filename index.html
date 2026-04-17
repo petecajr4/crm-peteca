@@ -1053,9 +1053,13 @@ function CRMPeteca() {
     } catch(e) {}
   };
 
-  const showToast = (msg, type="success") => {
-    setToast({msg, type});
-    setTimeout(() => setToast(null), 3000);
+  const showToast = (msg, type="success", options = {}) => {
+    const duration = options.duration || 3000;
+    setToast({msg, type, action: options.action || null, actionLabel: options.actionLabel || null});
+    setTimeout(() => setToast(t => {
+      // só fecha se for o mesmo toast (não sobrescreveu com outro)
+      return null;
+    }), duration);
   };
 
   // ============================================================
@@ -1125,6 +1129,17 @@ function CRMPeteca() {
       notes: mod.notes || ""
     };
   }, [mods]);
+
+  // v3 FIX: set global de IDs inativos (aplicar mods) — usado em todas as abas para filtrar vendas
+  const inativosIds = useMemo(() => {
+    const s = new Set();
+    clientes.forEach(c => {
+      const mod = mods[c.i];
+      const ativo = mod?.a !== undefined ? mod.a : c.a;
+      if (ativo !== 1) s.add(c.i);
+    });
+    return s;
+  }, [clientes, mods]);
 
   // Cidades e IDEs únicos
   const cidades = useMemo(() => {
@@ -1642,6 +1657,33 @@ function CRMPeteca() {
 
         {/* FOOTER SIDEBAR */}
         <div style={{padding: sidebarCollapsed ? "10px" : "12px 14px",borderTop:"1px solid rgba(255,255,255,0.05)",display:"flex",flexDirection:"column",gap:8}}>
+          {/* ATALHO: Ver Inativos */}
+          {inativosIds.size > 0 && (
+            <button onClick={() => { setTab("clientes"); setStatusFiltro("INATIVOS"); setPage(0); }}
+              title={sidebarCollapsed ? `Ver ${inativosIds.size} inativos` : ""}
+              style={{
+                width:"100%",
+                background:"rgba(251,146,60,0.08)",
+                border:"1px solid rgba(251,146,60,0.2)",
+                borderRadius:9,
+                padding: sidebarCollapsed ? "8px 0" : "8px 12px",
+                color:"#fdba74",fontSize:11,cursor:"pointer",fontWeight:500,
+                display:"flex",alignItems:"center",
+                justifyContent: sidebarCollapsed ? "center" : "space-between",
+                gap:8
+              }} onMouseEnter={e=>{e.currentTarget.style.background="rgba(251,146,60,0.15)";}}
+                 onMouseLeave={e=>{e.currentTarget.style.background="rgba(251,146,60,0.08)";}}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{fontSize:13}}>📦</span>
+                {!sidebarCollapsed && <span style={{fontSize:11}}>Inativos</span>}
+              </div>
+              <span style={{
+                background:"rgba(251,146,60,0.2)",
+                padding:"2px 7px",borderRadius:10,fontSize:10,fontWeight:700,
+                border:"1px solid rgba(251,146,60,0.3)"
+              }}>{inativosIds.size}</span>
+            </button>
+          )}
           {/* INDICADOR DE SYNC TICKETFLOW */}
           {(() => {
             const now = Date.now();
@@ -1736,10 +1778,12 @@ function CRMPeteca() {
         {/* DASHBOARD TAB */}
         {tab === "dashboard" && (() => {
           // Calcular dados agregados das vendas
-          const allSales = [];
+          const allSalesRaw = [];
           Object.entries(vendas).forEach(([mes, arr]) => {
-            if (Array.isArray(arr)) arr.forEach(v => allSales.push(v));
+            if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
           });
+          // v3 FIX: filtrar vendas de clientes inativados
+          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
           
           const anos = [...new Set(allSales.map(v => v.data?.slice(0,4)).filter(Boolean))].sort();
           const anosFiltrados = anosSelecionados.length > 0 ? anosSelecionados : anos;
@@ -2170,10 +2214,12 @@ function CRMPeteca() {
         {/* CIDADE TAB */}
         {tab === "cidade" && (() => {
           // Montar dados: todas vendas com cidade do cliente
-          const allSales = [];
+          const allSalesRaw = [];
           Object.entries(vendas).forEach(([mes, arr]) => {
-            if (Array.isArray(arr)) arr.forEach(v => allSales.push(v));
+            if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
           });
+          // v3 FIX: filtrar vendas de clientes inativados
+          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
           
           // Mapa ID cliente → cidade
           const clienteToCidade = {};
@@ -2586,10 +2632,12 @@ function CRMPeteca() {
 
         {/* PRODUTOS TAB */}
         {tab === "produtos" && (() => {
-          const allSales = [];
+          const allSalesRaw = [];
           Object.entries(vendas).forEach(([mes, arr]) => {
-            if (Array.isArray(arr)) arr.forEach(v => allSales.push(v));
+            if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
           });
+          // v3 FIX: filtrar vendas de clientes inativados
+          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
           
           const clienteToCidade = {};
           const clienteToNome = {};
@@ -3289,10 +3337,12 @@ function CRMPeteca() {
 
         {/* VENDEDORES TAB */}
         {tab === "vendedores" && (() => {
-          const allSales = [];
+          const allSalesRaw = [];
           Object.entries(vendas).forEach(([mes, arr]) => {
-            if (Array.isArray(arr)) arr.forEach(v => allSales.push(v));
+            if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
           });
+          // v3 FIX: filtrar vendas de clientes inativados
+          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
           
           const clienteToCidade = {};
           const clienteToNome = {};
@@ -3761,10 +3811,12 @@ function CRMPeteca() {
 
         {/* FLUXO DE VENDAS TAB */}
         {tab === "fluxo" && (() => {
-          const allSales = [];
+          const allSalesRaw = [];
           Object.entries(vendas).forEach(([mes, arr]) => {
-            if (Array.isArray(arr)) arr.forEach(v => allSales.push(v));
+            if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
           });
+          // v3 FIX: filtrar vendas de clientes inativados
+          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
 
           const clienteToCidade = {};
           const clienteToNome = {};
@@ -4371,15 +4423,21 @@ function CRMPeteca() {
 
         {/* ABANDONO & RECUPERAÇÃO TAB */}
         {tab === "abandono" && (() => {
-          const allSales = [];
+          const allSalesRaw = [];
           Object.entries(vendas).forEach(([mes, arr]) => {
-            if (Array.isArray(arr)) arr.forEach(v => allSales.push(v));
+            if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
           });
+          // v3 FIX: filtrar vendas de clientes inativados
+          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
+
+          // v3 FIX: aplicar mods (inativação) nos clientes
+          const clientesComMods = clientes.map(c => getClientData(c));
+          const inativosSet = new Set(clientesComMods.filter(c => c.a !== 1).map(c => c.i));
 
           const clienteToCidade = {};
           const clienteToNome = {};
           const clienteAtivo = {};
-          clientes.forEach(c => { 
+          clientesComMods.forEach(c => { 
             clienteToCidade[c.i] = c.c; 
             clienteToNome[c.i] = c.n;
             clienteAtivo[c.i] = c.a;
@@ -4393,6 +4451,7 @@ function CRMPeteca() {
           allSales.forEach(v => {
             const id = v.clienteId;
             if (!id) return;
+            if (inativosSet.has(id)) return; // v3 FIX: ignorar vendas de clientes inativados
             const ideInfo = clienteIdeMap[id];
             const key = ideInfo ? ideInfo.key : 'cli_' + id;
             
@@ -4422,7 +4481,7 @@ function CRMPeteca() {
           });
 
           // Adicionar clientes/grupos sem vendas
-          clientes.forEach(c => {
+          clientesComMods.forEach(c => {
             if (c.a !== 1) return;
             const ideInfo = clienteIdeMap[c.i];
             const key = ideInfo ? ideInfo.key : 'cli_' + c.i;
@@ -4986,6 +5045,8 @@ function CRMPeteca() {
                           </div>
                         </div>
                         <button onClick={() => {
+                          // Salvar snapshot do estado antes
+                          const modsAnterior = {...mods};
                           // Inativar TODOS os membros do grupo usando mods
                           const newMods = {...mods};
                           abandonoModal.membros.forEach(mid => {
@@ -4993,8 +5054,21 @@ function CRMPeteca() {
                             newMods[mid].a = 0;
                           });
                           saveMods(newMods);
+                          const nomeInativado = abandonoModal.nome;
+                          const qtdInativados = abandonoModal.isIde ? abandonoModal.membros.length : 1;
                           setAbandonoModal(null);
-                          showToast(`✓ "${abandonoModal.nome}" inativado e oculto de todo o sistema${abandonoModal.isIde ? ` (${abandonoModal.membros.length} CNPJs)` : ""}`);
+                          showToast(
+                            `✓ "${nomeInativado}" inativado${abandonoModal.isIde ? ` (${qtdInativados} CNPJs)` : ""}`,
+                            "warning",
+                            {
+                              duration: 10000,
+                              actionLabel: "↶ Desfazer",
+                              action: () => {
+                                saveMods(modsAnterior);
+                                showToast(`↶ Inativação desfeita: "${nomeInativado}" voltou à lista`);
+                              }
+                            }
+                          );
                         }} style={{
                           padding:"10px 18px",background:"#dc2626",border:"none",borderRadius:8,
                           color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"
@@ -5010,10 +5084,12 @@ function CRMPeteca() {
 
         {/* METAS & DESEMPENHO TAB */}
         {tab === "metas" && (() => {
-          const allSales = [];
+          const allSalesRaw = [];
           Object.entries(vendas).forEach(([mes, arr]) => {
-            if (Array.isArray(arr)) arr.forEach(v => allSales.push(v));
+            if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
           });
+          // v3 FIX: filtrar vendas de clientes inativados
+          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
           
           if (allSales.length === 0) {
             return (
@@ -6539,12 +6615,29 @@ function CRMPeteca() {
       {toast && (
         <div style={{
           position:"fixed",bottom:24,right:24,
-          background: toast.type==="error" ? "#7f1d1d" : "#0d3320",
-          border: `1px solid ${toast.type==="error" ? "#dc2626" : "#16a34a"}`,
-          borderRadius:10,padding:"12px 20px",color: toast.type==="error" ? "#fca5a5" : "#86efac",
+          background: toast.type==="error" ? "#7f1d1d" : toast.type==="warning" ? "#3a2d08" : "#0d3320",
+          border: `1px solid ${toast.type==="error" ? "#dc2626" : toast.type==="warning" ? "#eab308" : "#16a34a"}`,
+          borderRadius:10,padding:"12px 18px",
+          color: toast.type==="error" ? "#fca5a5" : toast.type==="warning" ? "#fde68a" : "#86efac",
           fontSize:13,fontWeight:500,zIndex:500,animation:"slideUp .3s ease",
-          boxShadow:"0 8px 30px rgba(0,0,0,0.4)"
-        }}>{toast.msg}</div>
+          boxShadow:"0 8px 30px rgba(0,0,0,0.4)",
+          display:"flex",alignItems:"center",gap:14,maxWidth:"calc(100vw - 48px)"
+        }}>
+          <div style={{flex:1}}>{toast.msg}</div>
+          {toast.action && toast.actionLabel && (
+            <button onClick={() => { toast.action(); setToast(null); }} style={{
+              padding:"6px 12px",
+              background:"rgba(255,255,255,0.1)",
+              border:"1px solid rgba(255,255,255,0.2)",
+              borderRadius:6,
+              color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap",
+              flexShrink:0
+            }} onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,0.18)";}}
+               onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,0.1)";}}>
+              {toast.actionLabel}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
