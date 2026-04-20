@@ -102,17 +102,6 @@ function CRMPeteca() {
   const [newIdeName, setNewIdeName] = useState("");
   const [selectedForIde, setSelectedForIde] = useState([]);
   const [tab, setTab] = useState("clientes");
-  // v2 ENHANCEMENTS
-  const [cmdkOpen, setCmdkOpen] = useState(false);
-  const [cmdkQuery, setCmdkQuery] = useState("");
-  const [cmdkIndex, setCmdkIndex] = useState(0);
-  const [donutHover, setDonutHover] = useState(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    try { return localStorage.getItem('peteca_sidebar_collapsed') === '1'; } catch(e) { return false; }
-  });
-  useEffect(() => {
-    try { localStorage.setItem('peteca_sidebar_collapsed', sidebarCollapsed ? '1' : '0'); } catch(e) {}
-  }, [sidebarCollapsed]);
   const [toast, setToast] = useState(null);
   const [page, setPage] = useState(0);
   const [lastBackup, setLastBackup] = useState(null);
@@ -138,24 +127,8 @@ function CRMPeteca() {
   // ============================================================
   const TICKETFLOW_API = 'https://script.google.com/macros/s/AKfycby3EY-mk4FmQZxi3AYUj_pbUPjzDNonrIZPt4aeGttRJYDhpNKT57qfbziptX8Jc2Q/exec';
   const [ticketflowSyncing, setTicketflowSyncing] = useState(false);
-  const [lastSyncAt, setLastSyncAt] = useState(null);
-  const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | ok | error
-  const [syncTick, setSyncTick] = useState(0); // força re-render do label "há Xmin"
-  const lastSyncSilentRef = useRef(0);
-  useEffect(() => {
-    const t = setInterval(() => setSyncTick(x => x+1), 15000);
-    return () => clearInterval(t);
-  }, []);
   
   const VENDEDORES_TICKETFLOW = ["Denis","Reginaldo","Anderson","Anne","Lex","Emerson","Cassia","Anna","Alisson","Pardal","Tiago"];
-
-  // Vendedores inativos: removidos dos dropdowns (mas mantidos no histórico de vendas)
-  const VENDEDORES_INATIVOS = new Set([
-    "ADSON","BOB","BRUNO GARCIA","CAIQUE","CARLA/ROSE","CIDINHA","FRANCIELE","FRANCIELLE",
-    "GUSTAVO","HENRIQUE","LAJUSTICIA","LETICIA","OSMAR","POLITICA2020","RICARDO PLAY",
-    "SEM VENDEDOR","WALLISON"
-  ]);
-  const filtrarVendedoresAtivos = (lista) => lista.filter(v => !VENDEDORES_INATIVOS.has(String(v||"").toUpperCase().trim()));
   
   const callTicketFlowAPI = async (params) => {
     try {
@@ -221,15 +194,14 @@ function CRMPeteca() {
   };
 
   // Sincronizar comentários do TicketFlow → anotações do CRM
-  const syncRecontatosFromTicketFlow = async (silent = false) => {
-    if (!silent) setTicketflowSyncing(true);
-    setSyncStatus("syncing");
+  const syncRecontatosFromTicketFlow = async () => {
+    setTicketflowSyncing(true);
     try {
       const allData = await callTicketFlowAPI({action:'getAll'});
-      if (!allData.ok) { if (!silent) setTicketflowSyncing(false); setSyncStatus("error"); return 0; }
+      if (!allData.ok) { setTicketflowSyncing(false); return 0; }
       
       const recontatoTag = (allData.tags||[]).find(t => t.name === 'Recontato');
-      if (!recontatoTag) { if (!silent) setTicketflowSyncing(false); setSyncStatus("ok"); setLastSyncAt(Date.now()); return 0; }
+      if (!recontatoTag) { setTicketflowSyncing(false); return 0; }
       
       // Filtrar tickets com tag Recontato que vieram do CRM
       const tickets = (allData.tickets||[]).filter(t => {
@@ -250,29 +222,6 @@ function CRMPeteca() {
         
         const comentarios = cmtResult.comments || [];
         if (!novasAnot[crmKey]) novasAnot[crmKey] = [];
-
-        // v3: Registrar a DESCRIÇÃO INICIAL do ticket (abertura) — só 1x por ticket
-        const descTicket = ticket.description || ticket.desc || ticket.descricao || ticket.body || ticket.text || "";
-        const tituloTicket = ticket.title || ticket.titulo || ticket.name || ticket.subject || "";
-        if (descTicket || tituloTicket) {
-          const jaTemAbertura = novasAnot[crmKey].some(a => a.ticketflowAbertura === ticket.id);
-          if (!jaTemAbertura) {
-            const dataAbertura = ticket.created || ticket.createdAt || ticket.date || new Date().toISOString();
-            novasAnot[crmKey].push({
-              tipo: "ticketflow",
-              vendedor: ticket.author || ticket.owner || ticket.vendedor || "TicketFlow",
-              data: dataAbertura,
-              dataDisplay: (() => {
-                try { const d = new Date(dataAbertura); return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); }
-                catch(e) { return new Date().toLocaleDateString('pt-BR'); }
-              })(),
-              obs: `📋 ABERTURA DO TICKET #${String(ticket.id).slice(-6).toUpperCase()}${tituloTicket ? `\n${tituloTicket}` : ''}${descTicket ? `\n\n${descTicket}` : ''}`,
-              ticketflowAbertura: ticket.id,
-              ticketId: ticket.id
-            });
-            novosComentarios++;
-          }
-        }
         
         comentarios.forEach(cmt => {
           // Verificar se já existe (por data + texto)
@@ -317,14 +266,11 @@ function CRMPeteca() {
         try { await window.storage.set(ANOTACOES_STORAGE, JSON.stringify(novasAnot)); } catch(e) {}
       }
       
-      if (!silent) setTicketflowSyncing(false);
-      setSyncStatus("ok");
-      setLastSyncAt(Date.now());
+      setTicketflowSyncing(false);
       return novosComentarios;
     } catch(e) {
       console.error("Erro sync TicketFlow:", e);
-      if (!silent) setTicketflowSyncing(false);
-      setSyncStatus("error");
+      setTicketflowSyncing(false);
       return 0;
     }
   };
@@ -914,62 +860,6 @@ function CRMPeteca() {
       if (n > 0) showToast(`🔄 ${n} atualizações do TicketFlow sincronizadas`);
     });
   }, []);
-
-  // v3: Auto-sync TicketFlow a cada 2 minutos (silencioso)
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      if (document.hidden) return; // não sincroniza se a aba estiver em background
-      const n = await syncRecontatosFromTicketFlow(true);
-      if (n > 0) showToast(`🔄 ${n} ${n === 1 ? 'novo comentário' : 'novos comentários'} do TicketFlow`);
-    }, 120000); // 2 minutos
-    return () => clearInterval(interval);
-  }, []);
-
-  // v3: Sync imediato ao voltar para a aba (visibilitychange)
-  useEffect(() => {
-    const onVisibilityChange = async () => {
-      if (!document.hidden) {
-        // Só sincroniza se faz mais de 30s do último sync
-        const agora = Date.now();
-        if (agora - lastSyncSilentRef.current < 30000) return;
-        lastSyncSilentRef.current = agora;
-        const n = await syncRecontatosFromTicketFlow(true);
-        if (n > 0) showToast(`🔄 ${n} ${n === 1 ? 'nova atualização' : 'novas atualizações'} enquanto você estava fora`);
-      }
-    };
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
-  }, []);
-
-  // v2: Keyboard shortcuts globais (Cmd+K, 1-9 tabs, ESC)
-  useEffect(() => {
-    const tabKeys = ["dashboard","clientes","importar","cidade","produtos","vendedores","fluxo","abandono","metas"];
-    const handler = (e) => {
-      // Cmd+K / Ctrl+K -> abrir command palette
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        setCmdkOpen(v => !v);
-        setCmdkQuery("");
-        setCmdkIndex(0);
-        return;
-      }
-      // ESC fecha palette
-      if (e.key === 'Escape' && cmdkOpen) {
-        setCmdkOpen(false);
-        return;
-      }
-      // Alt+1..9 troca de aba (Alt para não conflitar com campos de input)
-      if (e.altKey && !e.ctrlKey && !e.metaKey && /^[1-9]$/.test(e.key)) {
-        const idx = parseInt(e.key) - 1;
-        if (tabKeys[idx]) {
-          e.preventDefault();
-          setTab(tabKeys[idx]);
-        }
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [cmdkOpen]);
   
   const loadAnotacoes = async () => {
     try {
@@ -1053,13 +943,9 @@ function CRMPeteca() {
     } catch(e) {}
   };
 
-  const showToast = (msg, type="success", options = {}) => {
-    const duration = options.duration || 3000;
-    setToast({msg, type, action: options.action || null, actionLabel: options.actionLabel || null});
-    setTimeout(() => setToast(t => {
-      // só fecha se for o mesmo toast (não sobrescreveu com outro)
-      return null;
-    }), duration);
+  const showToast = (msg, type="success") => {
+    setToast({msg, type});
+    setTimeout(() => setToast(null), 3000);
   };
 
   // ============================================================
@@ -1129,17 +1015,6 @@ function CRMPeteca() {
       notes: mod.notes || ""
     };
   }, [mods]);
-
-  // v3 FIX: set global de IDs inativos (aplicar mods) — usado em todas as abas para filtrar vendas
-  const inativosIds = useMemo(() => {
-    const s = new Set();
-    clientes.forEach(c => {
-      const mod = mods[c.i];
-      const ativo = mod?.a !== undefined ? mod.a : c.a;
-      if (ativo !== 1) s.add(c.i);
-    });
-    return s;
-  }, [clientes, mods]);
 
   // Cidades e IDEs únicos
   const cidades = useMemo(() => {
@@ -1466,324 +1341,106 @@ function CRMPeteca() {
 
   return (
     <div style={{
-      background:"radial-gradient(ellipse at top left, #0f1629 0%, #080c18 50%, #050811 100%)",
+      background:"linear-gradient(135deg, #0a0f1a 0%, #0d1526 50%, #0a1220 100%)",
       minHeight:"100vh",
-      fontFamily:"'Inter','Segoe UI','Helvetica Neue',sans-serif",
+      fontFamily:"'Segoe UI','Helvetica Neue',sans-serif",
       color:"#c8d6e5",
       position:"relative"
     }}>
-      {/* AURORA BACKGROUND */}
-      <div className="aurora-bg">
-        <div className="aurora-blob" style={{width:500,height:500,background:"#6366f1",top:"-10%",left:"-5%"}}/>
-        <div className="aurora-blob" style={{width:400,height:400,background:"#a855f7",top:"30%",right:"-10%",animationDelay:"-7s"}}/>
-        <div className="aurora-blob" style={{width:450,height:450,background:"#ec4899",bottom:"-10%",left:"30%",animationDelay:"-14s"}}/>
-      </div>
-
       <style>{`
         * { box-sizing: border-box; margin: 0; padding: 0; }
         @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
         @keyframes fadeIn { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:translateY(0)} }
         @keyframes slideUp { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
-        @keyframes slideDown { from{opacity:0;transform:translateY(-20px)} to{opacity:1;transform:translateY(0)} }
-        @keyframes slideInLeft { from{opacity:0;transform:translateX(-20px)} to{opacity:1;transform:translateX(0)} }
-        @keyframes slideInRight { from{opacity:0;transform:translateX(20px)} to{opacity:1;transform:translateX(0)} }
-        @keyframes scaleIn { from{opacity:0;transform:scale(0.95)} to{opacity:1;transform:scale(1)} }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.6} }
-        @keyframes shimmer { 0%{background-position:-200% 0} 100%{background-position:200% 0} }
-        @keyframes glow { 0%,100%{box-shadow:0 0 20px rgba(99,102,241,0.3)} 50%{box-shadow:0 0 40px rgba(99,102,241,0.6)} }
-        @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-4px)} }
-        @keyframes gradientShift { 0%,100%{background-position:0% 50%} 50%{background-position:100% 50%} }
-        @keyframes aurora { 0%{transform:translate(0,0) rotate(0deg)} 33%{transform:translate(30px,-20px) rotate(120deg)} 66%{transform:translate(-20px,30px) rotate(240deg)} 100%{transform:translate(0,0) rotate(360deg)} }
-        ::-webkit-scrollbar { width: 8px; height: 8px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: linear-gradient(180deg,#3b4f8a,#1e3050); border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: linear-gradient(180deg,#5b6fc8,#2e4070); }
-        input, select, textarea { outline: none; transition: all .2s cubic-bezier(.4,0,.2,1); }
-        input:focus, select:focus, textarea:focus { border-color: #6366f1 !important; box-shadow: 0 0 0 3px rgba(99,102,241,0.15); }
-        html { scroll-behavior: smooth; }
-        body { font-feature-settings: "cv02","cv03","cv04","cv11"; }
-        button { transition: all .15s cubic-bezier(.4,0,.2,1); }
-        button:active:not(:disabled) { transform: scale(0.97); }
-        button:hover:not(:disabled) { filter: brightness(1.1); }
-        .v2-churn-low{background:linear-gradient(90deg,#16a34a,#22c55e);color:#fff}
-        .v2-churn-med{background:linear-gradient(90deg,#eab308,#facc15);color:#000}
-        .v2-churn-high{background:linear-gradient(90deg,#dc2626,#ef4444);color:#fff}
-        .v2-churn-crit{background:linear-gradient(90deg,#7f1d1d,#991b1b);color:#fff;animation:pulse 2s infinite}
-        .glass { background: rgba(20,28,48,0.6); backdrop-filter: blur(20px) saturate(180%); -webkit-backdrop-filter: blur(20px) saturate(180%); border: 1px solid rgba(255,255,255,0.08); }
-        .glass-strong { background: rgba(13,21,38,0.75); backdrop-filter: blur(24px) saturate(200%); -webkit-backdrop-filter: blur(24px) saturate(200%); border: 1px solid rgba(255,255,255,0.1); }
-        .card-hover { transition: all .25s cubic-bezier(.4,0,.2,1); }
-        .card-hover:hover { transform: translateY(-2px); border-color: rgba(99,102,241,0.3) !important; box-shadow: 0 12px 40px rgba(0,0,0,0.4), 0 0 0 1px rgba(99,102,241,0.15); }
-        .tab-content { animation: fadeIn .3s cubic-bezier(.4,0,.2,1); }
-        .gradient-text { background: linear-gradient(135deg,#60a5fa 0%,#a78bfa 50%,#f472b6 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-        .gradient-border { position: relative; background: #0d1526; }
-        .gradient-border::before { content:''; position:absolute; inset:-1px; border-radius:inherit; padding:1px; background:linear-gradient(135deg,#6366f1,#a855f7,#ec4899); -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0); -webkit-mask-composite:xor; mask-composite:exclude; pointer-events:none; }
-        .aurora-bg { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
-        .aurora-blob { position: absolute; border-radius: 50%; filter: blur(80px); opacity: 0.15; animation: aurora 20s ease-in-out infinite; }
-        .number-display { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
-        .tooltip { position: relative; }
-        .tooltip:hover::after { content: attr(data-tip); position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: #0d1526; color: #e2e8f0; padding: 4px 8px; border-radius: 4px; font-size: 10px; white-space: nowrap; border: 1px solid #2a3f66; margin-bottom: 4px; z-index: 1000; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #0d1526; }
+        ::-webkit-scrollbar-thumb { background: #1e3a5f; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #2a5080; }
+        input, select { outline: none; }
+        input:focus, select:focus { border-color: #3b82f6 !important; box-shadow: 0 0 0 2px rgba(59,130,246,0.2); }
       `}</style>
 
-      {/* SIDEBAR LATERAL FIXA */}
-      <aside style={{
-        position:"fixed",
-        left:0,top:0,bottom:0,
-        width: sidebarCollapsed ? 68 : 230,
-        background:"rgba(8,12,24,0.85)",
-        backdropFilter:"blur(24px) saturate(180%)",
-        WebkitBackdropFilter:"blur(24px) saturate(180%)",
-        borderRight:"1px solid rgba(255,255,255,0.06)",
-        display:"flex",flexDirection:"column",
-        zIndex:100,
-        transition:"width .3s cubic-bezier(.4,0,.2,1)",
-        overflow:"hidden"
+      {/* HEADER */}
+      <div style={{
+        background:"linear-gradient(90deg, #0d1526 0%, #132240 50%, #0d1526 100%)",
+        borderBottom:"1px solid #1a2744",
+        padding:"16px 24px",
+        display:"flex",
+        alignItems:"center",
+        justifyContent:"space-between",
+        position:"sticky",
+        top:0,
+        zIndex:100
       }}>
-        {/* LOGO / BRAND */}
-        <div style={{
-          padding: sidebarCollapsed ? "18px 0" : "18px 18px",
-          display:"flex",alignItems:"center",
-          justifyContent: sidebarCollapsed ? "center" : "flex-start",
-          gap:12,
-          borderBottom:"1px solid rgba(255,255,255,0.05)"
-        }}>
+        <div style={{display:"flex",alignItems:"center",gap:16}}>
           <div style={{
-            width:36,height:36,borderRadius:10,flexShrink:0,
-            background:"linear-gradient(135deg,#6366f1 0%,#a855f7 50%,#ec4899 100%)",
-            backgroundSize:"200% 200%",
-            animation:"gradientShift 8s ease infinite",
+            width:42,height:42,borderRadius:10,
+            background:"linear-gradient(135deg,#3b82f6,#6366f1)",
             display:"flex",alignItems:"center",justifyContent:"center",
-            fontSize:18,fontWeight:800,color:"#fff",
-            boxShadow:"0 4px 16px rgba(99,102,241,0.4), inset 0 1px 0 rgba(255,255,255,0.2)"
+            fontSize:20,fontWeight:700,color:"#fff",
+            boxShadow:"0 4px 15px rgba(59,130,246,0.3)"
           }}>P</div>
-          {!sidebarCollapsed && (
-            <div style={{overflow:"hidden",whiteSpace:"nowrap",animation:"fadeIn .3s"}}>
-              <div style={{fontSize:15,fontWeight:800,letterSpacing:-0.3}}>
-                <span className="gradient-text">PETECA</span>
-                <span style={{fontSize:8,color:"#a78bfa",background:"rgba(167,139,250,0.12)",padding:"2px 6px",borderRadius:10,fontWeight:600,letterSpacing:1,border:"1px solid rgba(167,139,250,0.2)",marginLeft:6,verticalAlign:"middle"}}>v3</span>
-              </div>
-              <div style={{fontSize:9,color:"#64748b",letterSpacing:1.5,textTransform:"uppercase",marginTop:1,fontWeight:500}}>CRM PRO</div>
-            </div>
-          )}
+          <div>
+            <div style={{fontSize:18,fontWeight:700,color:"#e2e8f0",letterSpacing:1}}>PETECA CRM</div>
+            <div style={{fontSize:11,color:"#5a7a9a",letterSpacing:2,textTransform:"uppercase"}}>Sistema de Gestão Comercial</div>
+          </div>
         </div>
-
-        {/* BOTÃO COLAPSAR */}
-        <button onClick={() => setSidebarCollapsed(v => !v)} style={{
-          position:"absolute",
-          right: -12, top: 28,
-          width:24,height:24,borderRadius:"50%",
-          background:"rgba(99,102,241,0.9)",
-          border:"2px solid rgba(8,12,24,0.95)",
-          color:"#fff",fontSize:12,cursor:"pointer",
-          display:"flex",alignItems:"center",justifyContent:"center",
-          boxShadow:"0 4px 12px rgba(0,0,0,0.4)",
-          zIndex:10,
-          transition:"all .2s"
-        }} onMouseEnter={e=>{e.currentTarget.style.background="#8b5cf6"; e.currentTarget.style.transform="scale(1.1)";}}
-           onMouseLeave={e=>{e.currentTarget.style.background="rgba(99,102,241,0.9)"; e.currentTarget.style.transform="scale(1)";}}
-           title={sidebarCollapsed ? "Expandir menu" : "Recolher menu"}>
-          {sidebarCollapsed ? "›" : "‹"}
-        </button>
-
-        {/* BUSCA ⌘K */}
-        <div style={{padding: sidebarCollapsed ? "12px 10px" : "12px 14px"}}>
-          <button onClick={()=>{setCmdkOpen(true); setCmdkQuery(""); setCmdkIndex(0);}} style={{
-            width:"100%",
-            background:"rgba(99,102,241,0.08)",
-            border:"1px solid rgba(99,102,241,0.2)",
-            borderRadius:10,
-            padding: sidebarCollapsed ? "10px 0" : "10px 12px",
-            color:"#c8d6e5",fontSize:12,cursor:"pointer",
-            display:"flex",alignItems:"center",
-            justifyContent: sidebarCollapsed ? "center" : "space-between",
-            gap:8,fontWeight:500
-          }} onMouseEnter={e=>{e.currentTarget.style.background="rgba(99,102,241,0.15)"; e.currentTarget.style.borderColor="rgba(99,102,241,0.4)";}}
-             onMouseLeave={e=>{e.currentTarget.style.background="rgba(99,102,241,0.08)"; e.currentTarget.style.borderColor="rgba(99,102,241,0.2)";}}
-             title={sidebarCollapsed ? "Buscar (⌘K)" : ""}>
-            <div style={{display:"flex",alignItems:"center",gap:8}}>
-              <span style={{fontSize:14}}>🔍</span>
-              {!sidebarCollapsed && <span>Buscar</span>}
-            </div>
-            {!sidebarCollapsed && (
-              <span style={{background:"rgba(0,0,0,0.3)",padding:"2px 7px",borderRadius:5,fontSize:9,fontFamily:"ui-monospace,monospace",color:"#a78bfa",letterSpacing:0.5}}>⌘K</span>
-            )}
-          </button>
-        </div>
-
-        {/* NAV ITEMS */}
-        <nav style={{flex:1,padding:"6px 10px",display:"flex",flexDirection:"column",gap:3,overflowY:"auto"}}>
-          {[
-            {key:"dashboard",label:"Dashboard",icon:"📊"},
-            {key:"clientes",label:"Clientes",icon:"👥"},
-            {key:"importar",label:"Importar",icon:"📥"},
-            {key:"cidade",label:"Cidade",icon:"🏙"},
-            {key:"produtos",label:"Produtos",icon:"📦"},
-            {key:"vendedores",label:"Vendedores",icon:"🏆"},
-            {key:"fluxo",label:"Fluxo",icon:"📈"},
-            {key:"abandono",label:"Abandono",icon:"🚨"},
-            {key:"metas",label:"Metas",icon:"🎯"},
-          ].map((t,i) => {
-            const isActive = tab === t.key;
-            return (
-              <button key={t.key} onClick={() => setTab(t.key)} style={{
-                width:"100%",
-                padding: sidebarCollapsed ? "11px 0" : "10px 12px",
-                fontSize:13,fontWeight:isActive?600:500,
-                color: isActive ? "#fff" : "#8a95a8",
-                background: isActive
-                  ? "linear-gradient(135deg,rgba(99,102,241,0.9),rgba(168,85,247,0.8))"
-                  : "transparent",
-                border: isActive ? "1px solid rgba(255,255,255,0.1)" : "1px solid transparent",
-                borderRadius:9,cursor:"pointer",
-                display:"flex",alignItems:"center",
-                justifyContent: sidebarCollapsed ? "center" : "flex-start",
-                gap:11,
-                boxShadow: isActive ? "0 4px 16px rgba(99,102,241,0.35), inset 0 1px 0 rgba(255,255,255,0.15)" : "none",
-                transition:"all .18s cubic-bezier(.4,0,.2,1)",
-                position:"relative"
-              }} onMouseEnter={e=>{ if(!isActive){ e.currentTarget.style.background="rgba(255,255,255,0.05)"; e.currentTarget.style.color="#e2e8f0";} }}
-                 onMouseLeave={e=>{ if(!isActive){ e.currentTarget.style.background="transparent"; e.currentTarget.style.color="#8a95a8";} }}
-                 title={sidebarCollapsed ? t.label + " (Alt+" + (i+1) + ")" : ""}>
-                <span style={{fontSize:16,filter:isActive?"none":"grayscale(0.3)"}}>{t.icon}</span>
-                {!sidebarCollapsed && (
-                  <>
-                    <span style={{flex:1,textAlign:"left"}}>{t.label}</span>
-                    <span style={{fontSize:9,opacity:0.5,fontFamily:"ui-monospace,monospace",background:isActive?"rgba(0,0,0,0.25)":"rgba(255,255,255,0.05)",padding:"2px 6px",borderRadius:4}}>{i+1}</span>
-                  </>
-                )}
-              </button>
-            );
-          })}
-        </nav>
-
-        {/* FOOTER SIDEBAR */}
-        <div style={{padding: sidebarCollapsed ? "10px" : "12px 14px",borderTop:"1px solid rgba(255,255,255,0.05)",display:"flex",flexDirection:"column",gap:8}}>
-          {/* ATALHO: Ver Inativos */}
-          {inativosIds.size > 0 && (
-            <button onClick={() => { setTab("clientes"); setStatusFiltro("INATIVOS"); setPage(0); }}
-              title={sidebarCollapsed ? `Ver ${inativosIds.size} inativos` : ""}
-              style={{
-                width:"100%",
-                background:"rgba(251,146,60,0.08)",
-                border:"1px solid rgba(251,146,60,0.2)",
-                borderRadius:9,
-                padding: sidebarCollapsed ? "8px 0" : "8px 12px",
-                color:"#fdba74",fontSize:11,cursor:"pointer",fontWeight:500,
-                display:"flex",alignItems:"center",
-                justifyContent: sidebarCollapsed ? "center" : "space-between",
-                gap:8
-              }} onMouseEnter={e=>{e.currentTarget.style.background="rgba(251,146,60,0.15)";}}
-                 onMouseLeave={e=>{e.currentTarget.style.background="rgba(251,146,60,0.08)";}}>
-              <div style={{display:"flex",alignItems:"center",gap:8}}>
-                <span style={{fontSize:13}}>📦</span>
-                {!sidebarCollapsed && <span style={{fontSize:11}}>Inativos</span>}
-              </div>
-              <span style={{
-                background:"rgba(251,146,60,0.2)",
-                padding:"2px 7px",borderRadius:10,fontSize:10,fontWeight:700,
-                border:"1px solid rgba(251,146,60,0.3)"
-              }}>{inativosIds.size}</span>
-            </button>
-          )}
-          {/* INDICADOR DE SYNC TICKETFLOW */}
-          {(() => {
-            const now = Date.now();
-            const secsAgo = lastSyncAt ? Math.floor((now - lastSyncAt) / 1000) : null;
-            const minsAgo = secsAgo ? Math.floor(secsAgo / 60) : null;
-            const timeLabel = !lastSyncAt ? "—"
-              : secsAgo < 60 ? `${secsAgo}s`
-              : minsAgo < 60 ? `${minsAgo}m`
-              : `${Math.floor(minsAgo/60)}h`;
-            const dotColor = syncStatus === "syncing" ? "#eab308"
-              : syncStatus === "error" ? "#ef4444"
-              : syncStatus === "ok" ? "#22c55e" : "#6b7280";
-            const dotAnim = syncStatus === "syncing" ? "pulse 1s infinite" : "none";
-            const tooltip = syncStatus === "syncing" ? "Sincronizando com TicketFlow..."
-              : syncStatus === "error" ? "Falha ao sincronizar (clique para retry)"
-              : syncStatus === "ok" ? `Sincronizado há ${timeLabel} • Clique para atualizar agora`
-              : "Clique para sincronizar";
-            return (
-              <button onClick={async () => {
-                const n = await syncRecontatosFromTicketFlow();
-                showToast(n > 0 ? `🔄 ${n} ${n === 1 ? 'atualização' : 'atualizações'}` : "✅ Tudo sincronizado");
-              }} disabled={syncStatus === "syncing"}
-                title={tooltip}
-                style={{
-                  width:"100%",
-                  background: syncStatus === "error" ? "rgba(239,68,68,0.08)" : "rgba(255,255,255,0.02)",
-                  border:"1px solid " + (syncStatus === "error" ? "rgba(239,68,68,0.25)" : "rgba(255,255,255,0.06)"),
-                  borderRadius:9,
-                  padding: sidebarCollapsed ? "8px 0" : "8px 12px",
-                  color:"#94a3b8",fontSize:11,cursor: syncStatus === "syncing" ? "default" : "pointer",fontWeight:500,
-                  display:"flex",alignItems:"center",
-                  justifyContent: sidebarCollapsed ? "center" : "space-between",
-                  gap:8
-                }}>
-                <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <span style={{
-                    width:8,height:8,borderRadius:"50%",background:dotColor,
-                    boxShadow:`0 0 8px ${dotColor}`,animation:dotAnim,flexShrink:0
-                  }}/>
-                  {!sidebarCollapsed && (
-                    <span style={{fontSize:10}}>
-                      {syncStatus === "syncing" ? "Sincronizando..."
-                        : syncStatus === "error" ? "Erro sync"
-                        : lastSyncAt ? `TicketFlow · ${timeLabel}` : "Não sincronizado"}
-                    </span>
-                  )}
-                </div>
-                {!sidebarCollapsed && <span style={{fontSize:11,opacity:0.6}}>🔄</span>}
-              </button>
-            );
-          })()}
-          {backupDays >= 7 && !sidebarCollapsed && (
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          {backupDays >= 7 && (
             <div style={{
-              background:"linear-gradient(135deg,rgba(220,38,38,0.15),rgba(239,68,68,0.1))",
-              border:"1px solid rgba(220,38,38,0.3)",
-              borderRadius:9,padding:"8px 12px",
-              fontSize:11,color:"#fca5a5",animation:"pulse 2s infinite",cursor:"pointer",fontWeight:500,textAlign:"center"
+              background:"#7f1d1d",border:"1px solid #dc2626",borderRadius:8,padding:"6px 12px",
+              fontSize:11,color:"#fca5a5",animation:"pulse 2s infinite",cursor:"pointer"
             }} onClick={() => setShowBackupModal(true)}>
-              ⚠ Backup há {backupDays === 999 ? "nunca" : `${backupDays}d`}
+              ⚠ Backup há {backupDays === 999 ? "nunca" : `${backupDays} dias`}
             </div>
           )}
           <button onClick={() => setShowBackupModal(true)} style={{
-            width:"100%",
-            background: backupDays >= 7 && sidebarCollapsed ? "rgba(220,38,38,0.15)" : "rgba(255,255,255,0.04)",
-            border:"1px solid " + (backupDays >= 7 && sidebarCollapsed ? "rgba(220,38,38,0.3)" : "rgba(255,255,255,0.08)"),
-            borderRadius:9,
-            padding: sidebarCollapsed ? "10px 0" : "9px 12px",
-            color:"#c8d6e5",fontSize:12,cursor:"pointer",fontWeight:500,
-            display:"flex",alignItems:"center",
-            justifyContent: sidebarCollapsed ? "center" : "flex-start",
-            gap:10,
-            animation: (backupDays >= 7 && sidebarCollapsed) ? "pulse 2s infinite" : "none"
-          }} onMouseEnter={e=>{if(!(backupDays >= 7 && sidebarCollapsed)) e.currentTarget.style.background="rgba(255,255,255,0.08)";}}
-             onMouseLeave={e=>{if(!(backupDays >= 7 && sidebarCollapsed)) e.currentTarget.style.background="rgba(255,255,255,0.04)";}}
-             title={sidebarCollapsed ? "Backup" + (backupDays >= 7 ? ` (${backupDays}d)` : "") : ""}>
-            <span style={{fontSize:14}}>💾</span>
-            {!sidebarCollapsed && <span>Backup</span>}
+            background:"#1a2744",border:"1px solid #2a3f66",borderRadius:8,padding:"8px 16px",
+            color:"#8899bb",fontSize:12,cursor:"pointer",transition:"all .2s"
+          }} onMouseEnter={e=>e.target.style.background="#1e3050"} onMouseLeave={e=>e.target.style.background="#1a2744"}>
+            💾 Backup
           </button>
         </div>
-      </aside>
+      </div>
 
-      {/* CONTEÚDO PRINCIPAL (com margem para a sidebar) */}
-      <main style={{
-        marginLeft: sidebarCollapsed ? 68 : 230,
-        transition:"margin-left .3s cubic-bezier(.4,0,.2,1)",
-        minHeight:"100vh",
-        position:"relative",
-        zIndex:1
+      {/* NAVIGATION TABS */}
+      <div style={{
+        display:"flex",gap:2,padding:"0 24px",background:"#0b1222",borderBottom:"1px solid #1a2744",
+        overflowX:"auto"
       }}>
+        {[
+          {key:"dashboard",label:"📊 Dashboard",active:true},
+          {key:"clientes",label:"👥 Clientes",active:true},
+          {key:"importar",label:"📥 Importar Vendas",active:true},
+          {key:"cidade",label:"🏙 Cidade",active:true},
+          {key:"produtos",label:"📦 Produtos",active:true},
+          {key:"vendedores",label:"🏆 Vendedores",active:true},
+          {key:"fluxo",label:"📈 Fluxo de Vendas",active:true},
+          {key:"abandono",label:"🚨 Abandono & Recuperação",active:true},
+          {key:"metas",label:"🎯 Metas",active:true},
+        ].map(t => (
+          <button key={t.key} onClick={() => t.active && setTab(t.key)} style={{
+            padding:"12px 18px",fontSize:13,fontWeight:tab===t.key?600:400,
+            color: !t.active ? "#3a4a5a" : tab===t.key ? "#3b82f6" : "#7a8a9a",
+            background: tab===t.key ? "#131f35" : "transparent",
+            border:"none",borderBottom: tab===t.key ? "2px solid #3b82f6" : "2px solid transparent",
+            cursor: t.active ? "pointer" : "default",transition:"all .2s",whiteSpace:"nowrap",
+            opacity: t.active ? 1 : 0.5
+          }}>
+            {t.label} {!t.active && <span style={{fontSize:9,color:"#3a4a5a"}}>em breve</span>}
+          </button>
+        ))}
+      </div>
 
       <div style={{padding:"20px 24px",maxWidth:1400,margin:"0 auto"}}>
         {/* DASHBOARD TAB */}
         {tab === "dashboard" && (() => {
           // Calcular dados agregados das vendas
-          const allSalesRaw = [];
+          const allSales = [];
           Object.entries(vendas).forEach(([mes, arr]) => {
-            if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
+            if (Array.isArray(arr)) arr.forEach(v => allSales.push(v));
           });
-          // v3 FIX: filtrar vendas de clientes inativados
-          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
           
           const anos = [...new Set(allSales.map(v => v.data?.slice(0,4)).filter(Boolean))].sort();
           const anosFiltrados = anosSelecionados.length > 0 ? anosSelecionados : anos;
@@ -2214,12 +1871,10 @@ function CRMPeteca() {
         {/* CIDADE TAB */}
         {tab === "cidade" && (() => {
           // Montar dados: todas vendas com cidade do cliente
-          const allSalesRaw = [];
+          const allSales = [];
           Object.entries(vendas).forEach(([mes, arr]) => {
-            if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
+            if (Array.isArray(arr)) arr.forEach(v => allSales.push(v));
           });
-          // v3 FIX: filtrar vendas de clientes inativados
-          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
           
           // Mapa ID cliente → cidade
           const clienteToCidade = {};
@@ -2632,12 +2287,10 @@ function CRMPeteca() {
 
         {/* PRODUTOS TAB */}
         {tab === "produtos" && (() => {
-          const allSalesRaw = [];
+          const allSales = [];
           Object.entries(vendas).forEach(([mes, arr]) => {
-            if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
+            if (Array.isArray(arr)) arr.forEach(v => allSales.push(v));
           });
-          // v3 FIX: filtrar vendas de clientes inativados
-          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
           
           const clienteToCidade = {};
           const clienteToNome = {};
@@ -2994,292 +2647,6 @@ function CRMPeteca() {
                 ))}
               </div>
 
-              {/* DONUT DUPLO - CATEGORIA → SUBCATEGORIA */}
-              {(() => {
-                // Mapa de agrupamento: palavra detectada -> categoria pai
-                const catGroupMap = {
-                  'FAIXA': 'LONA',
-                  'BANNER': 'LONA',
-                  'LONA': 'LONA',
-                };
-                // Extrair categoria (primeira palavra significativa) e subcategoria (2 primeiras palavras)
-                const stopWords = new Set(['DE','DO','DA','DOS','DAS','EM','PARA','COM','E','OU','A','O','NO','NA','PP','LTDA','KG','G','ML','L','CM','MM','MT','M','UND','UN','PC','PCS','CX','PCT']);
-                const extractParts = (desc) => {
-                  const clean = String(desc||'').toUpperCase().replace(/[^A-Z0-9ÇÃÕÉÁÍÚÓÂÊÔ ]/g,' ').replace(/\s+/g,' ').trim();
-                  const words = clean.split(' ').filter(w => w.length >= 2 && !stopWords.has(w) && !/^\d+$/.test(w));
-                  const firstWord = words[0] || 'OUTROS';
-                  // Se a primeira palavra está no mapa de agrupamento, categoria é o pai e subcategoria começa com a palavra original
-                  const cat = catGroupMap[firstWord] || firstWord;
-                  const sub = cat !== firstWord
-                    ? [firstWord, ...words.slice(1,2)].filter(Boolean).join(' ')
-                    : words.slice(0,2).join(' ') || cat;
-                  return { cat, sub };
-                };
-                const catMap = {};
-                prodsArr.forEach(p => {
-                  const { cat, sub } = extractParts(p.descricao);
-                  if (!catMap[cat]) catMap[cat] = { nome: cat, valor: 0, subs: {} };
-                  catMap[cat].valor += p.valor;
-                  if (!catMap[cat].subs[sub]) catMap[cat].subs[sub] = { nome: sub, valor: 0, count: 0 };
-                  catMap[cat].subs[sub].valor += p.valor;
-                  catMap[cat].subs[sub].count++;
-                });
-                const cats = Object.values(catMap).sort((a,b) => b.valor - a.valor).slice(0,8);
-                const catTotal = cats.reduce((s,c) => s+c.valor, 0);
-                if (cats.length === 0 || catTotal === 0) return null;
-
-                // Paleta base vibrante
-                const palette = [
-                  {base:'#6366f1', light:'#a5b4fc'}, // indigo
-                  {base:'#ec4899', light:'#f9a8d4'}, // pink
-                  {base:'#10b981', light:'#6ee7b7'}, // emerald
-                  {base:'#f59e0b', light:'#fcd34d'}, // amber
-                  {base:'#8b5cf6', light:'#c4b5fd'}, // violet
-                  {base:'#06b6d4', light:'#67e8f9'}, // cyan
-                  {base:'#ef4444', light:'#fca5a5'}, // red
-                  {base:'#84cc16', light:'#bef264'}, // lime
-                ];
-                const hexMix = (c1, c2, t) => {
-                  const h2r = h => [parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)];
-                  const [r1,g1,b1]=h2r(c1),[r2,g2,b2]=h2r(c2);
-                  const r=Math.round(r1+(r2-r1)*t),g=Math.round(g1+(g2-g1)*t),b=Math.round(b1+(b2-b1)*t);
-                  return '#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join('');
-                };
-
-                const size = 480, cx = size/2, cy = size/2;
-                const rInner = 60, rMid1 = 110, rMid2 = 125, rOuter = 195;
-                const arcPath = (cx,cy,r1,r2,a1,a2) => {
-                  const p1 = [cx + r2*Math.cos(a1), cy + r2*Math.sin(a1)];
-                  const p2 = [cx + r2*Math.cos(a2), cy + r2*Math.sin(a2)];
-                  const p3 = [cx + r1*Math.cos(a2), cy + r1*Math.sin(a2)];
-                  const p4 = [cx + r1*Math.cos(a1), cy + r1*Math.sin(a1)];
-                  const large = (a2-a1) > Math.PI ? 1 : 0;
-                  return `M ${p1[0]} ${p1[1]} A ${r2} ${r2} 0 ${large} 1 ${p2[0]} ${p2[1]} L ${p3[0]} ${p3[1]} A ${r1} ${r1} 0 ${large} 0 ${p4[0]} ${p4[1]} Z`;
-                };
-
-                // Construir segmentos
-                let curAng = -Math.PI/2;
-                const outerSegs = [], innerSegs = [];
-                cats.forEach((cat, ci) => {
-                  const catAng = (cat.valor / catTotal) * Math.PI * 2;
-                  const catStart = curAng, catEnd = curAng + catAng;
-                  const color = palette[ci % palette.length];
-                  outerSegs.push({cat, start:catStart, end:catEnd, color:color.base, colorLight:color.light, ci});
-                  // Subs
-                  const subs = Object.values(cat.subs).sort((a,b) => b.valor - a.valor).slice(0,6);
-                  const subsTotal = subs.reduce((s,x) => s+x.valor, 0);
-                  let subAng = catStart;
-                  subs.forEach((sub, si) => {
-                    const span = (sub.valor / subsTotal) * catAng;
-                    // Tint escalado: do escuro (base) ao claro (light). Mais contraste quando há mais subs.
-                    const t = subs.length > 1 ? si / (subs.length - 1) : 0.5;
-                    // Dois tons por segmento para criar gradient radial
-                    const colorStart = hexMix(color.base, '#000000', 0.15 - t*0.1); // mais escuro para primeiro
-                    const colorEnd = hexMix(color.base, '#ffffff', 0.15 + t*0.55);  // mais claro para último
-                    innerSegs.push({
-                      sub, cat, start:subAng, end:subAng+span,
-                      colorStart, colorEnd,
-                      color: colorEnd,
-                      ci, si
-                    });
-                    subAng += span;
-                  });
-                  curAng = catEnd;
-                });
-
-                return (
-                  <div className="card-hover" style={{
-                    background:"rgba(20,28,48,0.6)",
-                    backdropFilter:"blur(20px)",
-                    border:"1px solid rgba(255,255,255,0.08)",
-                    borderRadius:16,padding:24,marginBottom:24,
-                    animation:"scaleIn .4s cubic-bezier(.4,0,.2,1)"
-                  }}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:12}}>
-                      <div>
-                        <div style={{fontSize:15,fontWeight:700,color:"#e2e8f0",marginBottom:4}}>🍩 Mapa de Categorias de Produtos</div>
-                        <div style={{fontSize:11,color:"#64748b"}}>Anel externo: categoria principal • Anel interno: subcategorias • Passe o mouse para destacar</div>
-                      </div>
-                      <div style={{fontSize:11,color:"#a78bfa",background:"rgba(167,139,250,0.1)",padding:"6px 12px",borderRadius:8,border:"1px solid rgba(167,139,250,0.2)"}}>
-                        {cats.length} categorias • {innerSegs.length} subcategorias
-                      </div>
-                    </div>
-                    <div style={{display:"grid",gridTemplateColumns:"auto 1fr",gap:32,alignItems:"center"}}>
-                      <div style={{position:"relative"}}>
-                        <svg width={size} height={size} style={{overflow:"visible"}}>
-                          <defs>
-                            {palette.map((p,i) => (
-                              <radialGradient key={i} id={`donut-grad-${i}`} cx="50%" cy="50%" r="50%">
-                                <stop offset="0%" stopColor={p.light} stopOpacity="0.9"/>
-                                <stop offset="100%" stopColor={p.base} stopOpacity="1"/>
-                              </radialGradient>
-                            ))}
-                            {/* Gradient por segmento do anel interno: do centro do arco para fora */}
-                            {innerSegs.map((seg,i) => {
-                              const mid = (seg.start + seg.end) / 2;
-                              const x1 = 50 + 40 * Math.cos(seg.start);
-                              const y1 = 50 + 40 * Math.sin(seg.start);
-                              const x2 = 50 + 40 * Math.cos(seg.end);
-                              const y2 = 50 + 40 * Math.sin(seg.end);
-                              return (
-                                <linearGradient key={"ig"+i} id={`donut-inner-${i}`} x1={x1+"%"} y1={y1+"%"} x2={x2+"%"} y2={y2+"%"}>
-                                  <stop offset="0%" stopColor={seg.colorStart}/>
-                                  <stop offset="100%" stopColor={seg.colorEnd}/>
-                                </linearGradient>
-                              );
-                            })}
-                            <filter id="donut-glow" x="-50%" y="-50%" width="200%" height="200%">
-                              <feGaussianBlur stdDeviation="4" result="blur"/>
-                              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-                            </filter>
-                          </defs>
-                          {/* Anel externo - categorias */}
-                          {outerSegs.map((seg,i) => {
-                            const isHover = donutHover && donutHover.type === 'cat' && donutHover.ci === seg.ci;
-                            const isDimmed = donutHover && !(donutHover.ci === seg.ci);
-                            const midAng = (seg.start + seg.end) / 2;
-                            const lblR = rOuter + 28;
-                            const lblX = cx + lblR * Math.cos(midAng);
-                            const lblY = cy + lblR * Math.sin(midAng);
-                            const lineX1 = cx + (rOuter+3) * Math.cos(midAng);
-                            const lineY1 = cy + (rOuter+3) * Math.sin(midAng);
-                            const anchor = Math.cos(midAng) > 0.2 ? "start" : Math.cos(midAng) < -0.2 ? "end" : "middle";
-                            const pct = (seg.cat.valor / catTotal * 100).toFixed(1);
-                            return (
-                              <g key={"cat"+i} style={{transition:"opacity .25s",opacity:isDimmed?0.3:1,cursor:"pointer"}}
-                                onMouseEnter={() => setDonutHover({type:'cat',ci:seg.ci})}
-                                onMouseLeave={() => setDonutHover(null)}>
-                                <path d={arcPath(cx,cy,rMid2,rOuter,seg.start,seg.end)}
-                                  fill={`url(#donut-grad-${seg.ci % palette.length})`}
-                                  stroke="rgba(0,0,0,0.3)" strokeWidth="1"
-                                  style={{
-                                    filter: isHover ? "url(#donut-glow) brightness(1.2)" : "none",
-                                    transformOrigin: `${cx}px ${cy}px`,
-                                    transform: isHover ? "scale(1.04)" : "scale(1)",
-                                    transition:"all .25s cubic-bezier(.4,0,.2,1)"
-                                  }}/>
-                                {(seg.end - seg.start) > 0.12 && (
-                                  <>
-                                    <line x1={lineX1} y1={lineY1} x2={lblX - (anchor==="start"?-3:anchor==="end"?3:0)} y2={lblY}
-                                      stroke={seg.color} strokeWidth="1" opacity="0.5"/>
-                                    <text x={lblX} y={lblY-4} fill="#e2e8f0" fontSize="11" fontWeight="700" textAnchor={anchor}>
-                                      {seg.cat.nome.length > 14 ? seg.cat.nome.slice(0,14)+'…' : seg.cat.nome}
-                                    </text>
-                                    <text x={lblX} y={lblY+10} fill={seg.colorLight} fontSize="10" fontWeight="600" textAnchor={anchor}>
-                                      {pct}%
-                                    </text>
-                                  </>
-                                )}
-                              </g>
-                            );
-                          })}
-                          {/* Anel interno - subcategorias */}
-                          {innerSegs.map((seg,i) => {
-                            const isHover = donutHover && donutHover.type === 'sub' && donutHover.ci === seg.ci && donutHover.si === seg.si;
-                            const isDimmed = donutHover && !(donutHover.ci === seg.ci);
-                            return (
-                              <g key={"sub"+i} style={{transition:"opacity .25s",opacity:isDimmed?0.25:1,cursor:"pointer"}}
-                                onMouseEnter={() => setDonutHover({type:'sub',ci:seg.ci,si:seg.si})}
-                                onMouseLeave={() => setDonutHover(null)}>
-                                <path d={arcPath(cx,cy,rInner,rMid1,seg.start,seg.end)}
-                                  fill={`url(#donut-inner-${i})`}
-                                  stroke="rgba(13,21,38,0.6)" strokeWidth="1.5"
-                                  style={{
-                                    filter: isHover ? "brightness(1.25)" : "none",
-                                    transformOrigin: `${cx}px ${cy}px`,
-                                    transform: isHover ? "scale(1.05)" : "scale(1)",
-                                    transition:"all .25s cubic-bezier(.4,0,.2,1)"
-                                  }}/>
-                              </g>
-                            );
-                          })}
-                          {/* Centro */}
-                          <circle cx={cx} cy={cy} r={rInner-3} fill="rgba(13,21,38,0.95)" stroke="rgba(99,102,241,0.2)" strokeWidth="1"/>
-                          {donutHover ? (() => {
-                            const seg = donutHover.type === 'cat'
-                              ? outerSegs.find(s => s.ci === donutHover.ci)
-                              : innerSegs.find(s => s.ci === donutHover.ci && s.si === donutHover.si);
-                            if (!seg) return null;
-                            const nome = donutHover.type === 'cat' ? seg.cat.nome : seg.sub.nome;
-                            const valor = donutHover.type === 'cat' ? seg.cat.valor : seg.sub.valor;
-                            const pct = (valor / catTotal * 100).toFixed(1);
-                            return (
-                              <g>
-                                <text x={cx} y={cy-8} fill="#a78bfa" fontSize="9" textAnchor="middle" fontWeight="600" letterSpacing="1">
-                                  {donutHover.type === 'cat' ? 'CATEGORIA' : 'SUBCATEGORIA'}
-                                </text>
-                                <text x={cx} y={cy+6} fill="#e2e8f0" fontSize="11" textAnchor="middle" fontWeight="700">
-                                  {nome.length > 14 ? nome.slice(0,14)+'…' : nome}
-                                </text>
-                                <text x={cx} y={cy+22} fill="#22c55e" fontSize="10" textAnchor="middle" fontWeight="700">
-                                  {pct}%
-                                </text>
-                              </g>
-                            );
-                          })() : (
-                            <>
-                              <text x={cx} y={cy-8} fill="#64748b" fontSize="9" textAnchor="middle" fontWeight="600" letterSpacing="1">TOTAL</text>
-                              <text x={cx} y={cy+8} fill="#e2e8f0" fontSize="13" textAnchor="middle" fontWeight="700">
-                                R$ {(catTotal/1000).toFixed(0)}k
-                              </text>
-                              <text x={cx} y={cy+24} fill="#64748b" fontSize="9" textAnchor="middle">
-                                {prodsArr.length} produtos
-                              </text>
-                            </>
-                          )}
-                        </svg>
-                      </div>
-                      {/* Legenda lateral */}
-                      <div style={{display:"flex",flexDirection:"column",gap:8,maxHeight:420,overflow:"auto",paddingRight:8}}>
-                        {cats.map((cat,ci) => {
-                          const color = palette[ci % palette.length];
-                          const pct = (cat.valor / catTotal * 100).toFixed(1);
-                          const subs = Object.values(cat.subs).sort((a,b) => b.valor - a.valor).slice(0,6);
-                          const isHover = donutHover && donutHover.ci === ci;
-                          return (
-                            <div key={ci}
-                              onMouseEnter={() => setDonutHover({type:'cat',ci})}
-                              onMouseLeave={() => setDonutHover(null)}
-                              style={{
-                                padding:"10px 12px",borderRadius:10,
-                                background: isHover ? `linear-gradient(135deg,${color.base}22,${color.base}11)` : "rgba(255,255,255,0.02)",
-                                border:`1px solid ${isHover ? color.base+'66' : 'rgba(255,255,255,0.05)'}`,
-                                transition:"all .2s",cursor:"pointer"
-                              }}>
-                              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
-                                <div style={{display:"flex",alignItems:"center",gap:8}}>
-                                  <div style={{width:10,height:10,borderRadius:3,background:`linear-gradient(135deg,${color.base},${color.light})`,boxShadow:`0 0 8px ${color.base}66`}}/>
-                                  <div style={{fontSize:12,fontWeight:700,color:"#e2e8f0"}}>{cat.nome}</div>
-                                </div>
-                                <div style={{fontSize:11,color:color.light,fontWeight:700}}>{pct}%</div>
-                              </div>
-                              <div style={{display:"flex",flexWrap:"wrap",gap:4,marginLeft:18}}>
-                                {subs.map((sub,si) => {
-                                  const isSubHover = donutHover && donutHover.type === 'sub' && donutHover.ci === ci && donutHover.si === si;
-                                  return (
-                                    <div key={si}
-                                      onMouseEnter={(e) => { e.stopPropagation(); setDonutHover({type:'sub',ci,si}); }}
-                                      style={{
-                                        fontSize:10,padding:"2px 8px",borderRadius:10,
-                                        background: isSubHover ? color.base : "rgba(255,255,255,0.04)",
-                                        color: isSubHover ? "#fff" : "#94a3b8",
-                                        border:`1px solid ${isSubHover ? color.light : "rgba(255,255,255,0.05)"}`,
-                                        transition:"all .15s"
-                                      }}>
-                                      {sub.nome} <span style={{opacity:0.6}}>({sub.count})</span>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })()}
-
               {/* Lista produtos */}
               <div style={{background:"linear-gradient(135deg,#111c30,#152240)",border:"1px solid #1e3050",borderRadius:12,padding:20}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
@@ -3337,12 +2704,10 @@ function CRMPeteca() {
 
         {/* VENDEDORES TAB */}
         {tab === "vendedores" && (() => {
-          const allSalesRaw = [];
+          const allSales = [];
           Object.entries(vendas).forEach(([mes, arr]) => {
-            if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
+            if (Array.isArray(arr)) arr.forEach(v => allSales.push(v));
           });
-          // v3 FIX: filtrar vendas de clientes inativados
-          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
           
           const clienteToCidade = {};
           const clienteToNome = {};
@@ -3811,12 +3176,10 @@ function CRMPeteca() {
 
         {/* FLUXO DE VENDAS TAB */}
         {tab === "fluxo" && (() => {
-          const allSalesRaw = [];
+          const allSales = [];
           Object.entries(vendas).forEach(([mes, arr]) => {
-            if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
+            if (Array.isArray(arr)) arr.forEach(v => allSales.push(v));
           });
-          // v3 FIX: filtrar vendas de clientes inativados
-          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
 
           const clienteToCidade = {};
           const clienteToNome = {};
@@ -3839,7 +3202,7 @@ function CRMPeteca() {
 
           const mesesUnicos = [...new Set(salesFilt.map(v => v.data?.slice(0,7)).filter(Boolean))].sort();
           const cidadesDisp = [...new Set(allSales.map(v => clienteToCidade[v.clienteId]).filter(Boolean))].sort();
-          const vendedoresDisp = filtrarVendedoresAtivos([...new Set(allSales.map(v => v.vendedor || "SEM VENDEDOR"))]).sort();
+          const vendedoresDisp = [...new Set(allSales.map(v => v.vendedor || "SEM VENDEDOR"))].sort();
 
           // Mapa cliente AGRUPADO POR IDE
           const clienteMap = {};
@@ -4423,35 +3786,28 @@ function CRMPeteca() {
 
         {/* ABANDONO & RECUPERAÇÃO TAB */}
         {tab === "abandono" && (() => {
-          const allSalesRaw = [];
+          const allSales = [];
           Object.entries(vendas).forEach(([mes, arr]) => {
-            if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
+            if (Array.isArray(arr)) arr.forEach(v => allSales.push(v));
           });
-          // v3 FIX: filtrar vendas de clientes inativados
-          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
-
-          // v3 FIX: aplicar mods (inativação) nos clientes
-          const clientesComMods = clientes.map(c => getClientData(c));
-          const inativosSet = new Set(clientesComMods.filter(c => c.a !== 1).map(c => c.i));
 
           const clienteToCidade = {};
           const clienteToNome = {};
           const clienteAtivo = {};
-          clientesComMods.forEach(c => { 
+          clientes.forEach(c => { 
             clienteToCidade[c.i] = c.c; 
             clienteToNome[c.i] = c.n;
             clienteAtivo[c.i] = c.a;
           });
 
           const cidadesDisp = [...new Set(allSales.map(v => clienteToCidade[v.clienteId]).filter(Boolean))].sort();
-          const vendedoresDisp = filtrarVendedoresAtivos([...new Set(allSales.map(v => v.vendedor || "SEM VENDEDOR"))]).sort();
+          const vendedoresDisp = [...new Set(allSales.map(v => v.vendedor || "SEM VENDEDOR"))].sort();
 
           // Construir clientes AGRUPADOS POR IDE
           const clienteMap = {};
           allSales.forEach(v => {
             const id = v.clienteId;
             if (!id) return;
-            if (inativosSet.has(id)) return; // v3 FIX: ignorar vendas de clientes inativados
             const ideInfo = clienteIdeMap[id];
             const key = ideInfo ? ideInfo.key : 'cli_' + id;
             
@@ -4481,7 +3837,7 @@ function CRMPeteca() {
           });
 
           // Adicionar clientes/grupos sem vendas
-          clientesComMods.forEach(c => {
+          clientes.forEach(c => {
             if (c.a !== 1) return;
             const ideInfo = clienteIdeMap[c.i];
             const key = ideInfo ? ideInfo.key : 'cli_' + c.i;
@@ -4625,14 +3981,14 @@ function CRMPeteca() {
                     }}>{ticketflowSyncing ? "⏳ Sincronizando..." : "🔄 Sync TicketFlow"}</button>
                     <div style={{marginTop:8,display:"flex",gap:6,justifyContent:"flex-end"}}>
                       <button onClick={() => {
-                        const rows = clientesArr.map((c,i) => `<tr><td>${i+1}</td><td>${c.nome}${c.isIde?' 🔗':''}</td><td>${c.cidade}</td><td>${c.vendedorPrincipal}</td><td>${c.vendas}</td><td>R$ ${c.total.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td><td>${c.diasSemCompra}d</td><td>${c.status}</td><td>R$ ${c.potencialPerdido.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td></tr>`).join('');
-                        printContent(`Abandono & Recuperação (${clientesArr.length})`, `
+                        const rows = clientesFinal.map((c,i) => `<tr><td>${i+1}</td><td>${c.nome}${c.isIde?' 🔗':''}</td><td>${c.cidade}</td><td>${c.vendedorPrincipal}</td><td>${c.vendas}</td><td>R$ ${c.total.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td><td>${c.diasSemCompra}d</td><td>${c.status}</td><td>R$ ${c.potencialPerdido.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td></tr>`).join('');
+                        printContent(`Abandono & Recuperação (${clientesFinal.length})`, `
                           <div class="kpi-row"><div class="kpi"><div class="kpi-label">Potencial Perdido</div><div class="kpi-value" style="color:#c00">R$ ${totalPotencialPerdido.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div></div></div>
                           <table><thead><tr><th>#</th><th>Cliente</th><th>Cidade</th><th>Vendedor</th><th>Vendas</th><th>Total</th><th>Dias</th><th>Status</th><th>Potencial</th></tr></thead><tbody>${rows}</tbody></table>`);
                       }} style={{padding:"5px 10px",background:"#1a2744",border:"1px solid #2a3f66",borderRadius:5,color:"#8899bb",fontSize:9,cursor:"pointer"}}>🖨</button>
                       <button onClick={() => {
                         exportCSV('abandono.csv',['#','Cliente','IDE','Cidade','Vendedor','Vendas','Total','Dias sem Compra','Status','Potencial Perdido'],
-                          clientesArr.map((c,i) => [i+1, c.nome, c.code||'', c.cidade, c.vendedorPrincipal, c.vendas, c.total.toFixed(2), c.diasSemCompra, c.status, c.potencialPerdido.toFixed(2)]));
+                          clientesFinal.map((c,i) => [i+1, c.nome, c.code||'', c.cidade, c.vendedorPrincipal, c.vendas, c.total.toFixed(2), c.diasSemCompra, c.status, c.potencialPerdido.toFixed(2)]));
                       }} style={{padding:"5px 10px",background:"#1a2744",border:"1px solid #2a3f66",borderRadius:5,color:"#8899bb",fontSize:9,cursor:"pointer"}}>📊</button>
                     </div>
                   </div>
@@ -4946,36 +4302,13 @@ function CRMPeteca() {
                       <div style={{marginBottom:20}}>
                         <div style={{fontSize:13,fontWeight:700,color:"#e2e8f0",marginBottom:10}}>📜 Histórico de Contatos ({todosContatos.length})</div>
                         {todosContatos.map((a,ai) => {
-                          const isTicket = a.tipo === "ticketflow";
-                          const isAbertura = !!a.ticketflowAbertura;
-                          const isFinalizado = !!a.ticketflowFinalizado;
-                          const isComentario = isTicket && !isAbertura && !isFinalizado;
-                          const iconTipo = isAbertura ? "📋"
-                            : isFinalizado ? "🏁"
-                            : isComentario ? "💬"
-                            : {"telefone":"📞","whatsapp":"💬","visita":"🚗","email":"✉","outro":"📋"}[a.tipo] || "📋";
-                          const borderColor = isTicket ? "#a855f7" : "#3b82f6";
-                          const bgColor = isAbertura ? "linear-gradient(135deg,rgba(168,85,247,0.08),rgba(99,102,241,0.05))"
-                            : isFinalizado ? "rgba(239,68,68,0.05)"
-                            : isTicket ? "rgba(168,85,247,0.04)"
-                            : "#0a1220";
-                          const badgeLabel = isAbertura ? "ABERTURA TICKETFLOW"
-                            : isFinalizado ? "TICKETFLOW FINALIZADO"
-                            : isComentario ? "TICKETFLOW"
-                            : null;
+                          const iconTipo = {"telefone":"📞","whatsapp":"💬","visita":"🚗","email":"✉","outro":"📋"}[a.tipo] || "📋";
                           return (
-                            <div key={ai} style={{padding:"12px 14px",background:bgColor,borderRadius:8,marginBottom:8,border:"1px solid " + (isTicket ? "rgba(168,85,247,0.25)" : "#1e3050"),borderLeft:"3px solid " + borderColor}}>
+                            <div key={ai} style={{padding:"12px 14px",background:"#0a1220",borderRadius:8,marginBottom:8,border:"1px solid #1e3050",borderLeft:"3px solid #3b82f6"}}>
                               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
                                 <div style={{display:"flex",alignItems:"center",gap:10}}>
                                   <span style={{fontSize:16}}>{iconTipo}</span>
-                                  <span style={{fontSize:12,color: isTicket ? "#c4b5fd" : "#a78bfa",fontWeight:700}}>{a.vendedor || "—"}</span>
-                                  {badgeLabel && (
-                                    <span style={{
-                                      fontSize:8,padding:"2px 6px",borderRadius:4,
-                                      background:"rgba(168,85,247,0.15)",color:"#c4b5fd",
-                                      border:"1px solid rgba(168,85,247,0.3)",letterSpacing:0.5,fontWeight:700
-                                    }}>{badgeLabel}</span>
-                                  )}
+                                  <span style={{fontSize:12,color:"#a78bfa",fontWeight:700}}>{a.vendedor || "—"}</span>
                                 </div>
                                 <div style={{display:"flex",alignItems:"center",gap:8}}>
                                   <div style={{fontSize:10,color:"#5a7a9a"}}>{a.dataDisplay}</div>
@@ -5003,7 +4336,7 @@ function CRMPeteca() {
                                   }}>🗑</button>
                                 </div>
                               </div>
-                              {a.obs && <div style={{fontSize:12,color:"#c8d6e5",marginTop:4,lineHeight:1.5,whiteSpace:"pre-wrap"}}>{a.obs}</div>}
+                              {a.obs && <div style={{fontSize:12,color:"#c8d6e5",marginTop:4,lineHeight:1.4}}>{a.obs}</div>}
                             </div>
                           );
                         })}
@@ -5045,30 +4378,10 @@ function CRMPeteca() {
                           </div>
                         </div>
                         <button onClick={() => {
-                          // Salvar snapshot do estado antes
-                          const modsAnterior = {...mods};
-                          // Inativar TODOS os membros do grupo usando mods
-                          const newMods = {...mods};
-                          abandonoModal.membros.forEach(mid => {
-                            if (!newMods[mid]) newMods[mid] = {};
-                            newMods[mid].a = 0;
-                          });
-                          saveMods(newMods);
-                          const nomeInativado = abandonoModal.nome;
-                          const qtdInativados = abandonoModal.isIde ? abandonoModal.membros.length : 1;
+                          // Inativar TODOS os membros do grupo
+                          abandonoModal.membros.forEach(mid => updateMod(mid, { a: 0 }));
                           setAbandonoModal(null);
-                          showToast(
-                            `✓ "${nomeInativado}" inativado${abandonoModal.isIde ? ` (${qtdInativados} CNPJs)` : ""}`,
-                            "warning",
-                            {
-                              duration: 10000,
-                              actionLabel: "↶ Desfazer",
-                              action: () => {
-                                saveMods(modsAnterior);
-                                showToast(`↶ Inativação desfeita: "${nomeInativado}" voltou à lista`);
-                              }
-                            }
-                          );
+                          showToast(`✓ "${abandonoModal.nome}" inativado e oculto de todo o sistema${abandonoModal.isIde ? ` (${abandonoModal.membros.length} CNPJs)` : ""}`);
                         }} style={{
                           padding:"10px 18px",background:"#dc2626",border:"none",borderRadius:8,
                           color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"
@@ -5084,12 +4397,10 @@ function CRMPeteca() {
 
         {/* METAS & DESEMPENHO TAB */}
         {tab === "metas" && (() => {
-          const allSalesRaw = [];
+          const allSales = [];
           Object.entries(vendas).forEach(([mes, arr]) => {
-            if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
+            if (Array.isArray(arr)) arr.forEach(v => allSales.push(v));
           });
-          // v3 FIX: filtrar vendas de clientes inativados
-          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
           
           if (allSales.length === 0) {
             return (
@@ -5102,7 +4413,7 @@ function CRMPeteca() {
           }
 
           // Vendedores disponíveis
-          const vendedoresDisp = filtrarVendedoresAtivos([...new Set(allSales.map(v => v.vendedor || "SEM VENDEDOR"))]).sort();
+          const vendedoresDisp = [...new Set(allSales.map(v => v.vendedor || "SEM VENDEDOR"))].sort();
           
           // Meses disponíveis
           const mesesDisp = [...new Set(allSales.map(v => v.data?.slice(0,7)).filter(Boolean))].sort();
@@ -6053,9 +5364,14 @@ function CRMPeteca() {
               const cidadeSel = selectedForIde.length > 0 
                 ? getClientData(clientes.find(c => c.i === selectedForIde[0]) || clientes[0]).c 
                 : "";
-              const cidadeNorm = cidadeSel.replace(/\s+/g,"").toUpperCase();
+              const cidadeNorm = cidadeSel.replace(/\s+/g,"_").replace(/[^A-Z0-9_]/gi,"").toUpperCase();
               const existentes = ides.filter(i => i.includes(cidadeNorm)).length;
               const sugestaoNome = cidadeNorm ? `IDE_${cidadeNorm}_${String(existentes + 1).padStart(2,'0')}` : "";
+              
+              // Auto-preencher se o nome estiver vazio e tiver sugestão
+              if (!newIdeName && sugestaoNome && selectedForIde.length > 0) {
+                setTimeout(() => setNewIdeName(sugestaoNome), 0);
+              }
               
               return (
                 <div style={{background:"#0a1220",borderRadius:10,padding:20,marginBottom:16}}>
@@ -6517,127 +5833,16 @@ function CRMPeteca() {
         </div>
       )}
 
-      </main>
-
-      {/* v2: COMMAND PALETTE (Cmd+K) */}
-      {cmdkOpen && (() => {
-        const q = cmdkQuery.trim().toLowerCase();
-        const tabActions = [
-          {type:"tab",key:"dashboard",label:"📊 Dashboard",hint:"Alt+1"},
-          {type:"tab",key:"clientes",label:"👥 Clientes",hint:"Alt+2"},
-          {type:"tab",key:"importar",label:"📥 Importar Vendas",hint:"Alt+3"},
-          {type:"tab",key:"cidade",label:"🏙 Cidade",hint:"Alt+4"},
-          {type:"tab",key:"produtos",label:"📦 Produtos",hint:"Alt+5"},
-          {type:"tab",key:"vendedores",label:"🏆 Vendedores",hint:"Alt+6"},
-          {type:"tab",key:"fluxo",label:"📈 Fluxo de Vendas",hint:"Alt+7"},
-          {type:"tab",key:"abandono",label:"🚨 Abandono & Recuperação",hint:"Alt+8"},
-          {type:"tab",key:"metas",label:"🎯 Metas",hint:"Alt+9"},
-        ];
-        const actionItems = [
-          {type:"action",key:"backup",label:"💾 Abrir Backup",fn:()=>{setShowBackupModal(true);}},
-          {type:"action",key:"sync",label:"🔄 Sincronizar TicketFlow",fn:()=>{syncRecontatosFromTicketFlow().then(n=>showToast(n>0?`🔄 ${n} atualizações`:"✅ Tudo sincronizado"));}},
-          {type:"action",key:"ide",label:"🔗 Gerenciar IDEs",fn:()=>{setShowIdeManager(true);}},
-        ];
-        // Clientes filtrados (top 20)
-        const clienteItems = !q ? [] : clientes
-          .filter(c => (c.a!==0) && ((c.n||"").toLowerCase().includes(q) || String(c.i).includes(q) || (c.c||"").toLowerCase().includes(q)))
-          .slice(0,20)
-          .map(c => ({type:"cliente",key:"c_"+c.i,label:c.n,hint:`#${c.i} • ${c.c}`,cliente:c}));
-        const filtered = !q
-          ? [...tabActions, ...actionItems]
-          : [
-              ...tabActions.filter(t => t.label.toLowerCase().includes(q)),
-              ...actionItems.filter(a => a.label.toLowerCase().includes(q)),
-              ...clienteItems
-            ];
-        const idx = Math.min(cmdkIndex, Math.max(0, filtered.length-1));
-        const execItem = (it) => {
-          if (!it) return;
-          if (it.type === "tab") setTab(it.key);
-          else if (it.type === "action") it.fn();
-          else if (it.type === "cliente") { setTab("clientes"); setSelectedClient(it.cliente); setSearch(it.cliente.n); }
-          setCmdkOpen(false);
-        };
-        return (
-          <div onClick={()=>setCmdkOpen(false)} style={{
-            position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",backdropFilter:"blur(4px)",
-            zIndex:2000,display:"flex",alignItems:"flex-start",justifyContent:"center",paddingTop:"15vh",
-            animation:"fadeIn .15s ease"
-          }}>
-            <div onClick={e=>e.stopPropagation()} style={{
-              width:640,maxWidth:"90vw",background:"#0d1526",border:"1px solid #2a3f66",
-              borderRadius:14,boxShadow:"0 20px 60px rgba(0,0,0,0.6)",overflow:"hidden",
-              animation:"slideUp .2s ease"
-            }}>
-              <div style={{padding:"14px 18px",borderBottom:"1px solid #1a2744",display:"flex",alignItems:"center",gap:10}}>
-                <span style={{fontSize:18}}>⌘</span>
-                <input autoFocus value={cmdkQuery} onChange={e=>{setCmdkQuery(e.target.value); setCmdkIndex(0);}}
-                  onKeyDown={e=>{
-                    if (e.key==='ArrowDown'){ e.preventDefault(); setCmdkIndex(i=>Math.min(filtered.length-1,i+1)); }
-                    else if (e.key==='ArrowUp'){ e.preventDefault(); setCmdkIndex(i=>Math.max(0,i-1)); }
-                    else if (e.key==='Enter'){ e.preventDefault(); execItem(filtered[idx]); }
-                  }}
-                  placeholder="Buscar cliente, aba ou ação..."
-                  style={{flex:1,background:"transparent",border:"none",color:"#e2e8f0",fontSize:15,outline:"none"}}/>
-                <span style={{fontSize:10,color:"#5a7a9a",background:"#1a2744",padding:"3px 7px",borderRadius:5}}>ESC</span>
-              </div>
-              <div style={{maxHeight:"50vh",overflow:"auto"}}>
-                {filtered.length === 0 ? (
-                  <div style={{padding:"24px",textAlign:"center",color:"#5a7a9a",fontSize:13}}>Nenhum resultado</div>
-                ) : filtered.map((it,i) => (
-                  <div key={it.key} onClick={()=>execItem(it)} onMouseEnter={()=>setCmdkIndex(i)}
-                    style={{
-                      padding:"10px 18px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"space-between",
-                      background: i===idx ? "#132240" : "transparent",
-                      borderLeft: i===idx ? "2px solid #3b82f6" : "2px solid transparent"
-                    }}>
-                    <div style={{display:"flex",flexDirection:"column",gap:2}}>
-                      <div style={{fontSize:13,color:"#e2e8f0"}}>{it.label}</div>
-                      {it.hint && <div style={{fontSize:10,color:"#5a7a9a"}}>{it.hint}</div>}
-                    </div>
-                    <div style={{fontSize:10,color:"#5a7a9a",textTransform:"uppercase",letterSpacing:1}}>
-                      {it.type === "tab" ? "ABA" : it.type === "action" ? "AÇÃO" : "CLIENTE"}
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div style={{padding:"8px 18px",borderTop:"1px solid #1a2744",fontSize:10,color:"#5a7a9a",display:"flex",gap:12}}>
-                <span>↑↓ navegar</span>
-                <span>⏎ abrir</span>
-                <span>Alt+1-9 trocar aba</span>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
       {/* TOAST */}
       {toast && (
         <div style={{
           position:"fixed",bottom:24,right:24,
-          background: toast.type==="error" ? "#7f1d1d" : toast.type==="warning" ? "#3a2d08" : "#0d3320",
-          border: `1px solid ${toast.type==="error" ? "#dc2626" : toast.type==="warning" ? "#eab308" : "#16a34a"}`,
-          borderRadius:10,padding:"12px 18px",
-          color: toast.type==="error" ? "#fca5a5" : toast.type==="warning" ? "#fde68a" : "#86efac",
+          background: toast.type==="error" ? "#7f1d1d" : "#0d3320",
+          border: `1px solid ${toast.type==="error" ? "#dc2626" : "#16a34a"}`,
+          borderRadius:10,padding:"12px 20px",color: toast.type==="error" ? "#fca5a5" : "#86efac",
           fontSize:13,fontWeight:500,zIndex:500,animation:"slideUp .3s ease",
-          boxShadow:"0 8px 30px rgba(0,0,0,0.4)",
-          display:"flex",alignItems:"center",gap:14,maxWidth:"calc(100vw - 48px)"
-        }}>
-          <div style={{flex:1}}>{toast.msg}</div>
-          {toast.action && toast.actionLabel && (
-            <button onClick={() => { toast.action(); setToast(null); }} style={{
-              padding:"6px 12px",
-              background:"rgba(255,255,255,0.1)",
-              border:"1px solid rgba(255,255,255,0.2)",
-              borderRadius:6,
-              color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap",
-              flexShrink:0
-            }} onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,0.18)";}}
-               onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,0.1)";}}>
-              {toast.actionLabel}
-            </button>
-          )}
-        </div>
+          boxShadow:"0 8px 30px rgba(0,0,0,0.4)"
+        }}>{toast.msg}</div>
       )}
     </div>
   );
