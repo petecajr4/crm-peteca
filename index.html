@@ -173,6 +173,14 @@ function CRMPeteca() {
   const [kanbanTags, setKanbanTags] = useState([]);
   const [kanbanLoading, setKanbanLoading] = useState(false);
   const [kanbanLastSync, setKanbanLastSync] = useState(null);
+  const [kanbanViewMode, setKanbanViewMode] = useState(() => {
+    try { return localStorage.getItem('peteca_kanban_view') || 'blocos'; } catch(e) { return 'blocos'; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('peteca_kanban_view', kanbanViewMode); } catch(e) {}
+  }, [kanbanViewMode]);
+  const [kanbanFiltroVendedor, setKanbanFiltroVendedor] = useState('TODOS');
+  const [kanbanDetalhe, setKanbanDetalhe] = useState(null); // kanban selecionado no admin
   const [enviarKanbanModal, setEnviarKanbanModal] = useState(null); // {cliente, vendedor, obs}
   const [adminLoginModal, setAdminLoginModal] = useState(false);
 
@@ -5602,10 +5610,38 @@ function CRMPeteca() {
                     {kanbanLastSync && <span> • Sync {Math.floor((Date.now() - kanbanLastSync) / 60000)}min atrás</span>}
                   </div>
                 </div>
-                <button onClick={loadKanbansAdmin} disabled={kanbanLoading} style={{padding:"9px 16px",background:"rgba(99,102,241,0.1)",border:"1px solid rgba(99,102,241,0.25)",borderRadius:10,color:"#c4b5fd",fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:8}}>
-                  <span style={{display:"inline-block",animation:kanbanLoading?"spin 1s linear infinite":"none"}}>🔄</span>
-                  Atualizar
-                </button>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  {/* Filtro vendedor (só no modo bolinhas) */}
+                  {kanbanViewMode === 'bolinhas' && vendedoresOrdenados.length > 0 && (
+                    <select value={kanbanFiltroVendedor} onChange={e => setKanbanFiltroVendedor(e.target.value)} style={{padding:"9px 14px",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,color:"#c8d6e5",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+                      <option value="TODOS">👥 Todos vendedores</option>
+                      {vendedoresOrdenados.map(v => (
+                        <option key={v.nome} value={v.nome}>👤 {v.nome} ({v.total})</option>
+                      ))}
+                    </select>
+                  )}
+                  
+                  {/* Toggle de modo */}
+                  <div style={{display:"flex",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:10,padding:3,gap:2}}>
+                    <button onClick={() => setKanbanViewMode('blocos')} title="Visão em blocos (gerencial)" style={{
+                      padding:"7px 12px",borderRadius:7,
+                      background: kanbanViewMode === 'blocos' ? "linear-gradient(135deg,#6366f1,#a855f7)" : "transparent",
+                      border:"none",color: kanbanViewMode === 'blocos' ? "#fff" : "#94a3b8",
+                      fontSize:12,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",gap:6
+                    }}>📋 Blocos</button>
+                    <button onClick={() => setKanbanViewMode('bolinhas')} title="Visão em bolinhas flutuantes" style={{
+                      padding:"7px 12px",borderRadius:7,
+                      background: kanbanViewMode === 'bolinhas' ? "linear-gradient(135deg,#6366f1,#a855f7)" : "transparent",
+                      border:"none",color: kanbanViewMode === 'bolinhas' ? "#fff" : "#94a3b8",
+                      fontSize:12,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",gap:6
+                    }}>🎱 Bolinhas</button>
+                  </div>
+                  
+                  <button onClick={loadKanbansAdmin} disabled={kanbanLoading} style={{padding:"9px 14px",background:"rgba(99,102,241,0.1)",border:"1px solid rgba(99,102,241,0.25)",borderRadius:10,color:"#c4b5fd",fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{display:"inline-block",animation:kanbanLoading?"spin 1s linear infinite":"none"}}>🔄</span>
+                    Atualizar
+                  </button>
+                </div>
               </div>
               
               {kanbanLoading && kanbans.length === 0 ? (
@@ -5639,6 +5675,11 @@ function CRMPeteca() {
                       <div style={{fontSize:15,fontWeight:700,marginBottom:6}}>Nenhum Kanban criado ainda</div>
                       <div style={{fontSize:12,color:"#64748b"}}>Vá até a aba Abandono, clique em um cliente e use "🎱 Enviar ao Kanban"</div>
                     </div>
+                  ) : kanbanViewMode === 'bolinhas' ? (
+                    <KanbanBolinhasAdmin
+                      kanbans={ativos.filter(k => kanbanFiltroVendedor === 'TODOS' || k.vendedor === kanbanFiltroVendedor)}
+                      onSelectKanban={(id) => setKanbanDetalhe(ativos.find(k => k.id === id))}
+                    />
                   ) : (
                     <div style={{display:"flex",flexDirection:"column",gap:14}}>
                       {vendedoresOrdenados.map(v => (
@@ -5670,7 +5711,9 @@ function CRMPeteca() {
                               {ativos.filter(k => k.vendedor === v.nome).map(k => {
                                 const s = STATUS_CORES[k.status] || STATUS_CORES.aberto;
                                 return (
-                                  <div key={k.id} style={{
+                                  <div key={k.id} 
+                                    onClick={() => setKanbanDetalhe(k)}
+                                    style={{
                                     padding:"10px 12px",
                                     background:`linear-gradient(135deg,${s.cor}15,${s.cor}05)`,
                                     border:`1px solid ${s.cor}40`,
@@ -6895,6 +6938,48 @@ function CRMPeteca() {
         );
       })()}
 
+      {/* MODAL DETALHE KANBAN (admin) */}
+      {kanbanDetalhe && (
+        <KanbanDetalheAdminModal
+          kanban={kanbanDetalhe}
+          onClose={() => setKanbanDetalhe(null)}
+          onUpdateStatus={async (id, novoStatus) => {
+            // Otimista
+            setKanbans(prev => prev.map(k => k.id === id ? {...k, status: novoStatus} : k));
+            setKanbanDetalhe(prev => prev && prev.id === id ? {...prev, status: novoStatus} : prev);
+            const res = await callKanbanAPI('updateStatus', { id, novoStatus, por: adminName });
+            if (res.ok) showToast(`Status alterado`);
+            else { showToast('Erro ao salvar', 'error'); loadKanbansAdmin(); }
+          }}
+          onUpdateTags={async (id, novasTags) => {
+            const tagsStr = novasTags.join(';');
+            setKanbans(prev => prev.map(k => k.id === id ? {...k, tags: tagsStr} : k));
+            setKanbanDetalhe(prev => prev && prev.id === id ? {...prev, tags: tagsStr} : prev);
+            const res = await callKanbanAPI('updateTags', { id, tags: novasTags, por: adminName });
+            if (res.ok) showToast('Tags atualizadas');
+            else { showToast('Erro ao salvar', 'error'); loadKanbansAdmin(); }
+          }}
+          onAddComment={async (id, texto) => {
+            const res = await callKanbanAPI('addComment', { id, texto, por: adminName });
+            if (res.ok) showToast('Comentário adicionado');
+            else showToast('Erro ao salvar', 'error');
+            return res.ok;
+          }}
+          onFinalize={async (id, motivo) => {
+            const res = await callKanbanAPI('finalize', { id, motivo, por: adminName });
+            if (res.ok) {
+              showToast(`🏁 Kanban finalizado`);
+              loadKanbansAdmin();
+            } else {
+              showToast('Erro: ' + (res.error || 'desconhecido'), 'error');
+            }
+          }}
+          tags={kanbanTags}
+          adminName={adminName}
+          callKanbanAPI={callKanbanAPI}
+        />
+      )}
+
       {/* MODAL LOGIN ADMIN (opcional) */}
       {adminLoginModal && (() => {
         const [loginNome, setLoginNome] = [null, null]; // placeholders - use refs internos
@@ -6947,6 +7032,389 @@ function CRMPeteca() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ============================================================
+// KANBAN BOLINHAS (admin) — versão simplificada do vendedor
+// ============================================================
+function KanbanBolinhasAdmin({ kanbans, onSelectKanban }) {
+  const containerRef = useRef(null);
+  const [dimensions, setDimensions] = useState({ w: 800, h: 600 });
+  const particlesRef = useRef({});
+  const draggingRef = useRef(null);
+  const [, setTick] = useState(0);
+  
+  const STATUS_CORES = {
+    aberto:  { cor: '#60a5fa', corEscura: '#2563eb' },
+    contato: { cor: '#4ade80', corEscura: '#16a34a' },
+    retorno: { cor: '#fb923c', corEscura: '#ea580c' },
+    perdido: { cor: '#6b7280', corEscura: '#374151' }
+  };
+  
+  const calcSize = (p) => {
+    const v = Math.max(0, Number(p) || 0);
+    if (v === 0) return 42;
+    return Math.max(42, Math.min(130, 30 + Math.log10(v + 1) * 14));
+  };
+  
+  useEffect(() => {
+    const updateDim = () => {
+      if (containerRef.current) {
+        const r = containerRef.current.getBoundingClientRect();
+        setDimensions({ w: r.width, h: Math.max(500, r.height) });
+      }
+    };
+    updateDim();
+    window.addEventListener('resize', updateDim);
+    return () => window.removeEventListener('resize', updateDim);
+  }, []);
+  
+  useEffect(() => {
+    const atuais = new Set(kanbans.map(k => k.id));
+    Object.keys(particlesRef.current).forEach(id => {
+      if (!atuais.has(id)) delete particlesRef.current[id];
+    });
+    kanbans.forEach(k => {
+      if (!particlesRef.current[k.id]) {
+        const isPerdido = k.status === 'perdido';
+        const angle = Math.random() * Math.PI * 2;
+        const speed = isPerdido ? 1.2 : 2.5;
+        particlesRef.current[k.id] = {
+          x: 100 + Math.random() * Math.max(100, dimensions.w - 200),
+          y: isPerdido ? dimensions.h * 0.78 + Math.random() * (dimensions.h * 0.15) : 80 + Math.random() * Math.max(100, dimensions.h * 0.55),
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          r: calcSize(k.potencial_perdido) / 2,
+          m: Math.pow(calcSize(k.potencial_perdido) / 2, 2)
+        };
+      } else {
+        particlesRef.current[k.id].r = calcSize(k.potencial_perdido) / 2;
+        particlesRef.current[k.id].m = Math.pow(calcSize(k.potencial_perdido) / 2, 2);
+      }
+    });
+  }, [kanbans, dimensions]);
+  
+  useEffect(() => {
+    let running = true;
+    const kanbansMap = {};
+    kanbans.forEach(k => { kanbansMap[k.id] = k; });
+    
+    const tickFn = () => {
+      if (!running) return;
+      const parts = particlesRef.current;
+      const ids = Object.keys(parts);
+      const { w, h } = dimensions;
+      const perdidosLimite = h * 0.7;
+      
+      ids.forEach(id => {
+        const p = parts[id];
+        if (!p) return;
+        if (draggingRef.current?.id === id) return;
+        const kanban = kanbansMap[id];
+        const isPerdido = kanban?.status === 'perdido';
+        p.x += p.vx; p.y += p.vy;
+        const drag = isPerdido ? 0.995 : 0.998;
+        p.vx *= drag; p.vy *= drag;
+        if (Math.random() < 0.08) {
+          const force = isPerdido ? 0.35 : 0.6;
+          p.vx += (Math.random() - 0.5) * force;
+          p.vy += (Math.random() - 0.5) * force;
+        }
+        if (isPerdido && p.y < perdidosLimite) p.vy += 0.12;
+        if (!isPerdido && p.y > perdidosLimite - 20) p.vy -= 0.15;
+        const vAtual = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
+        const vMin = isPerdido ? 0.4 : 0.8;
+        if (vAtual < vMin) {
+          if (vAtual > 0.01) { p.vx *= vMin/vAtual; p.vy *= vMin/vAtual; }
+          else { const ang = Math.random()*Math.PI*2; p.vx = Math.cos(ang)*vMin; p.vy = Math.sin(ang)*vMin; }
+        }
+        const maxV = isPerdido ? 2.8 : 4.5;
+        if (vAtual > maxV) { p.vx = (p.vx/vAtual)*maxV; p.vy = (p.vy/vAtual)*maxV; }
+        if (p.x - p.r < 10) { p.x = p.r + 10; p.vx = Math.abs(p.vx) * 0.95; }
+        if (p.x + p.r > w - 10) { p.x = w - p.r - 10; p.vx = -Math.abs(p.vx) * 0.95; }
+        if (p.y - p.r < 10) { p.y = p.r + 10; p.vy = Math.abs(p.vy) * 0.95; }
+        if (p.y + p.r > h - 10) { p.y = h - p.r - 10; p.vy = -Math.abs(p.vy) * 0.95; }
+      });
+      
+      for (let i = 0; i < ids.length; i++) {
+        for (let j = i+1; j < ids.length; j++) {
+          const a = parts[ids[i]]; const b = parts[ids[j]];
+          if (!a || !b) continue;
+          const dx = b.x - a.x; const dy = b.y - a.y;
+          const dist = Math.sqrt(dx*dx + dy*dy);
+          const minDist = a.r + b.r + 2;
+          if (dist < minDist && dist > 0.01) {
+            const overlap = minDist - dist;
+            const nx = dx/dist; const ny = dy/dist;
+            const totalMass = a.m + b.m;
+            a.x -= nx*overlap*(b.m/totalMass); a.y -= ny*overlap*(b.m/totalMass);
+            b.x += nx*overlap*(a.m/totalMass); b.y += ny*overlap*(a.m/totalMass);
+            const van = a.vx*nx + a.vy*ny; const vbn = b.vx*nx + b.vy*ny;
+            if (van - vbn > 0) {
+              const vanNew = (van*(a.m-b.m) + 2*b.m*vbn)/totalMass;
+              const vbnNew = (vbn*(b.m-a.m) + 2*a.m*van)/totalMass;
+              a.vx += (vanNew-van)*nx*0.95; a.vy += (vanNew-van)*ny*0.95;
+              b.vx += (vbnNew-vbn)*nx*0.95; b.vy += (vbnNew-vbn)*ny*0.95;
+            }
+          }
+        }
+      }
+      setTick(t => t + 1);
+      requestAnimationFrame(tickFn);
+    };
+    const raf = requestAnimationFrame(tickFn);
+    return () => { running = false; cancelAnimationFrame(raf); };
+  }, [kanbans, dimensions]);
+  
+  const onMouseDown = (e, id) => {
+    const rect = containerRef.current.getBoundingClientRect();
+    const p = particlesRef.current[id]; if (!p) return;
+    draggingRef.current = { id, offsetX: e.clientX-rect.left-p.x, offsetY: e.clientY-rect.top-p.y, moved: false, startX: e.clientX, startY: e.clientY, lastX: p.x, lastY: p.y, velX: 0, velY: 0 };
+  };
+  const onMouseMove = (e) => {
+    const d = draggingRef.current; if (!d) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const p = particlesRef.current[d.id]; if (!p) return;
+    const nx = e.clientX - rect.left - d.offsetX; const ny = e.clientY - rect.top - d.offsetY;
+    d.velX = nx - d.lastX; d.velY = ny - d.lastY; d.lastX = nx; d.lastY = ny;
+    p.x = nx; p.y = ny; p.vx = 0; p.vy = 0;
+    if (Math.abs(e.clientX-d.startX)+Math.abs(e.clientY-d.startY) > 5) d.moved = true;
+  };
+  const onMouseUp = (id) => {
+    const d = draggingRef.current;
+    if (d && !d.moved && d.id === id) onSelectKanban(id);
+    else if (d && d.moved && d.id === id) {
+      const p = particlesRef.current[id];
+      if (p) { p.vx = d.velX * 1.2; p.vy = d.velY * 1.2; }
+    }
+    draggingRef.current = null;
+  };
+  
+  return (
+    <div ref={containerRef} style={{
+      position:"relative",
+      height:'calc(100vh - 320px)',
+      minHeight:500,
+      background:"rgba(8,12,24,0.4)",
+      border:"1px solid rgba(255,255,255,0.05)",
+      borderRadius:16,
+      overflow:"hidden",
+      cursor:"default"
+    }}
+      onMouseMove={onMouseMove}
+      onMouseUp={() => draggingRef.current = null}
+      onMouseLeave={() => draggingRef.current = null}
+    >
+      <div style={{position:'absolute',left:0,right:0,top:'70%',height:1,background:'linear-gradient(90deg, transparent, rgba(107,114,128,0.2), transparent)',pointerEvents:'none'}}></div>
+      <div style={{position:'absolute',left:14,top:'calc(70% + 8px)',fontSize:9,color:'rgba(107,114,128,0.5)',letterSpacing:2,textTransform:'uppercase',fontWeight:600,pointerEvents:'none'}}>⚫ Perdidos</div>
+      
+      {/* Legenda flutuante */}
+      <div style={{position:'absolute',top:14,right:14,display:'flex',gap:12,padding:'8px 14px',background:'rgba(13,21,38,0.85)',backdropFilter:'blur(16px)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:100,fontSize:11,color:'#94a3b8',fontWeight:500,zIndex:20,boxShadow:'0 4px 12px rgba(0,0,0,0.3)'}}>
+        {Object.entries({aberto:'Aberto',contato:'Em contato',retorno:'Retorno',perdido:'Perdido'}).map(([key, label]) => (
+          <div key={key} style={{display:'flex',alignItems:'center',gap:5}}>
+            <span style={{width:8,height:8,borderRadius:'50%',background:STATUS_CORES[key].cor,boxShadow:`0 0 6px ${STATUS_CORES[key].cor}80`}}></span>
+            <span>{label}</span>
+          </div>
+        ))}
+      </div>
+      
+      {kanbans.map(k => {
+        const p = particlesRef.current[k.id];
+        if (!p) return null;
+        const s = STATUS_CORES[k.status] || STATUS_CORES.aberto;
+        const size = p.r * 2;
+        const fontSize = Math.max(9, Math.min(14, size * 0.14));
+        const shortName = k.cliente_nome.length > 20 && size < 80 ? k.cliente_nome.slice(0,18)+'…' : k.cliente_nome;
+        return (
+          <div
+            key={k.id}
+            className="bubble"
+            onMouseDown={e => onMouseDown(e, k.id)}
+            onMouseUp={() => onMouseUp(k.id)}
+            style={{
+              left: p.x - p.r, top: p.y - p.r, width: size, height: size,
+              background: `radial-gradient(circle at 35% 30%, ${s.cor}ee, ${s.corEscura}dd)`,
+              border: `1.5px solid ${s.cor}`,
+              boxShadow: `0 4px 20px ${s.cor}55, inset 0 2px 8px rgba(255,255,255,0.2), inset 0 -4px 10px rgba(0,0,0,0.15)`,
+              color: '#fff', fontSize: fontSize,
+              opacity: k.status === 'perdido' ? 0.7 : 1,
+              position: 'absolute', borderRadius: '50%',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              textAlign: 'center', cursor: 'grab', userSelect: 'none',
+              fontWeight: 700, padding: 6, overflow: 'hidden', lineHeight: 1.1
+            }}
+            title={`${k.cliente_nome} • ${k.vendedor}`}
+          >
+            <span className="bubble-label" style={{fontSize:fontSize,fontWeight:700}}>{shortName}</span>
+            {/* Nome do vendedor em selo pequeno */}
+            {size >= 60 && (
+              <span style={{
+                position:'absolute',bottom:-4,right:-4,
+                background:'rgba(0,0,0,0.6)',color:'#fff',
+                fontSize:8,padding:'2px 5px',borderRadius:8,
+                fontWeight:700,letterSpacing:0.5,pointerEvents:'none',
+                border:'1px solid rgba(255,255,255,0.2)'
+              }}>{k.vendedor.slice(0,3)}</span>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ============================================================
+// MODAL DETALHE KANBAN (admin) - com botão Finalizar
+// ============================================================
+function KanbanDetalheAdminModal({ kanban, onClose, onUpdateStatus, onUpdateTags, onAddComment, onFinalize, tags, adminName, callKanbanAPI }) {
+  const [commentText, setCommentText] = useState('');
+  const [historico, setHistorico] = useState([]);
+  const [loadingHist, setLoadingHist] = useState(false);
+  const [confirmFinalize, setConfirmFinalize] = useState(false);
+  const [motivoFinal, setMotivoFinal] = useState('');
+  
+  const STATUS_CORES = {
+    aberto:  { cor: '#60a5fa', corEscura: '#2563eb', emoji: '🔵', label: 'Aberto' },
+    contato: { cor: '#4ade80', corEscura: '#16a34a', emoji: '🟢', label: 'Em contato' },
+    retorno: { cor: '#fb923c', corEscura: '#ea580c', emoji: '🟠', label: 'Retorno provável' },
+    perdido: { cor: '#6b7280', corEscura: '#374151', emoji: '⚫', label: 'Perdido' }
+  };
+  
+  const tagsAtuais = useMemo(() => (kanban.tags || '').split(';').filter(Boolean), [kanban.tags]);
+  
+  const loadHistorico = useCallback(async () => {
+    setLoadingHist(true);
+    const res = await callKanbanAPI('getHistory', { kanban_id: kanban.id });
+    if (res.ok) setHistorico(res.historico);
+    setLoadingHist(false);
+  }, [kanban.id, callKanbanAPI]);
+  
+  useEffect(() => { loadHistorico(); }, [loadHistorico]);
+  
+  const toggleTag = (tagNome) => {
+    const novas = tagsAtuais.includes(tagNome) ? tagsAtuais.filter(t => t !== tagNome) : [...tagsAtuais, tagNome];
+    onUpdateTags(kanban.id, novas);
+  };
+  const handleAddComment = async () => {
+    if (!commentText.trim()) return;
+    const ok = await onAddComment(kanban.id, commentText.trim());
+    if (ok) { setCommentText(''); loadHistorico(); }
+  };
+  const handleFinalize = async () => {
+    await onFinalize(kanban.id, motivoFinal || 'Finalizado pelo admin');
+    onClose();
+  };
+  
+  const s = STATUS_CORES[kanban.status] || STATUS_CORES.aberto;
+  const fmt = (n) => 'R$ ' + Number(n||0).toLocaleString('pt-BR', {minimumFractionDigits: 2});
+  const fmtData = (d) => { if (!d) return '—'; try { const dt=new Date(d); return dt.toLocaleDateString('pt-BR')+' '+dt.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); } catch(e){return String(d);} };
+  
+  return (
+    <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',backdropFilter:'blur(6px)',zIndex:1300,display:'flex',alignItems:'center',justifyContent:'center',padding:20,animation:'fadeIn .2s'}}>
+      <div onClick={e => e.stopPropagation()} style={{width:'100%',maxWidth:640,maxHeight:'90vh',overflowY:'auto',background:'rgba(13,21,38,0.95)',backdropFilter:'blur(20px) saturate(180%)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:20,boxShadow:'0 20px 60px rgba(0,0,0,0.5)',animation:'scaleIn .25s cubic-bezier(.4,0,.2,1)'}}>
+        <div style={{background:`linear-gradient(135deg, ${s.cor}33, ${s.corEscura}22)`,borderBottom:`1px solid ${s.cor}44`,padding:'20px 24px',position:'relative'}}>
+          <button onClick={onClose} style={{position:'absolute',top:14,right:14,width:32,height:32,borderRadius:8,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#94a3b8',fontSize:16,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}>✕</button>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6,flexWrap:'wrap'}}>
+            <span style={{fontSize:10,fontWeight:700,letterSpacing:1,textTransform:'uppercase',padding:'3px 8px',borderRadius:20,background:`${s.cor}33`,color:s.cor,border:`1px solid ${s.cor}66`}}>{s.emoji} {s.label}</span>
+            <span style={{fontSize:10,fontWeight:700,letterSpacing:1,textTransform:'uppercase',padding:'3px 8px',borderRadius:20,background:'rgba(168,85,247,0.15)',color:'#c4b5fd',border:'1px solid rgba(168,85,247,0.25)'}}>👤 {kanban.vendedor}</span>
+          </div>
+          <div style={{fontSize:20,fontWeight:800,letterSpacing:-0.5,marginBottom:4}}>{kanban.cliente_nome}</div>
+          <div style={{fontSize:11,color:'#94a3b8',letterSpacing:0.5}}>📍 {kanban.cliente_cidade || '—'} • ID {kanban.cliente_id}</div>
+        </div>
+        
+        <div style={{padding:'18px 24px',display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,borderBottom:'1px solid rgba(255,255,255,0.05)'}}>
+          <div style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.05)',borderRadius:10,padding:'10px 14px'}}>
+            <div style={{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,marginBottom:4}}>Faturamento histórico</div>
+            <div style={{fontSize:15,fontWeight:700,color:'#4ade80'}}>{fmt(kanban.faturamento_hist)}</div>
+          </div>
+          <div style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.05)',borderRadius:10,padding:'10px 14px'}}>
+            <div style={{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,marginBottom:4}}>Potencial perdido</div>
+            <div style={{fontSize:15,fontWeight:700,color:'#fca5a5'}}>{fmt(kanban.potencial_perdido)}</div>
+          </div>
+        </div>
+        
+        <div style={{padding:'18px 24px',borderBottom:'1px solid rgba(255,255,255,0.05)'}}>
+          <div style={{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,marginBottom:10}}>Mudar situação</div>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+            {Object.entries(STATUS_CORES).map(([key, st]) => {
+              const isActive = kanban.status === key;
+              return (
+                <button key={key} onClick={() => onUpdateStatus(kanban.id, key)} disabled={isActive} style={{padding:'8px 14px',borderRadius:20,background: isActive ? `${st.cor}30` : 'rgba(255,255,255,0.04)',border:`1px solid ${isActive ? st.cor+'80' : 'rgba(255,255,255,0.08)'}`,color: isActive ? st.cor : '#94a3b8',fontSize:12,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',gap:6}}>
+                  <span>{st.emoji}</span><span>{st.label}</span>{isActive && <span style={{fontSize:10,opacity:0.8}}>✓ atual</span>}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        
+        <div style={{padding:'18px 24px',borderBottom:'1px solid rgba(255,255,255,0.05)'}}>
+          <div style={{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,marginBottom:10}}>Tags {tagsAtuais.length > 0 && <span style={{color:'#a78bfa'}}>({tagsAtuais.length})</span>}</div>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+            {tags.map(t => {
+              const selected = tagsAtuais.includes(t.nome);
+              return (
+                <button key={t.id} onClick={() => toggleTag(t.nome)} style={{padding:'5px 11px',borderRadius:16,fontSize:11,fontWeight:600,background: selected ? t.cor : 'rgba(255,255,255,0.03)',color: selected ? '#fff' : '#94a3b8',border:`1px solid ${selected ? t.cor : 'rgba(255,255,255,0.08)'}`,boxShadow: selected ? `0 2px 8px ${t.cor}50` : 'none',cursor:'pointer'}}>{selected ? '✓ ' : ''}{t.nome}</button>
+              );
+            })}
+          </div>
+        </div>
+        
+        <div style={{padding:'18px 24px',borderBottom:'1px solid rgba(255,255,255,0.05)'}}>
+          <div style={{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,marginBottom:10}}>Adicionar comentário</div>
+          <textarea value={commentText} onChange={e => setCommentText(e.target.value)} placeholder="Ex: Cliente retornou, pediu pra enviar proposta..." rows={3} style={{width:'100%',padding:'11px 14px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:10,color:'#e2e8f0',fontSize:13,resize:'vertical',fontFamily:'inherit'}} />
+          <button onClick={handleAddComment} disabled={!commentText.trim()} style={{marginTop:8,padding:'9px 18px',background: commentText.trim() ? 'linear-gradient(135deg,#6366f1,#a855f7)' : 'rgba(255,255,255,0.05)',border:'none',borderRadius:8,color:'#fff',fontSize:12,fontWeight:600,cursor:'pointer',display:'inline-flex',alignItems:'center',gap:8}}>💾 Salvar comentário</button>
+        </div>
+        
+        {/* FINALIZAR — só admin */}
+        <div style={{padding:'18px 24px',borderBottom:'1px solid rgba(255,255,255,0.05)',background:'linear-gradient(135deg,rgba(34,197,94,0.05),rgba(16,185,129,0.03))'}}>
+          <div style={{fontSize:10,color:'#86efac',textTransform:'uppercase',letterSpacing:1,fontWeight:700,marginBottom:10}}>🏁 Finalizar Kanban (admin)</div>
+          {!confirmFinalize ? (
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,flexWrap:'wrap'}}>
+              <div style={{fontSize:11,color:'#94a3b8',flex:1,minWidth:200,lineHeight:1.5}}>
+                Finaliza e remove este Kanban da lista ativa. Use quando o caso estiver resolvido (recuperado, perdido definitivo ou descartado).
+              </div>
+              <button onClick={() => setConfirmFinalize(true)} style={{padding:'9px 18px',background:'linear-gradient(135deg,#16a34a,#22c55e)',border:'none',borderRadius:8,color:'#fff',fontSize:12,fontWeight:700,cursor:'pointer',boxShadow:'0 4px 12px rgba(34,197,94,0.3)',whiteSpace:'nowrap'}}>🏁 Finalizar</button>
+            </div>
+          ) : (
+            <div>
+              <input type="text" value={motivoFinal} onChange={e => setMotivoFinal(e.target.value)} placeholder="Motivo (ex: Voltou a comprar, Perdido pra concorrente...)" style={{width:'100%',padding:'10px 14px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(34,197,94,0.3)',borderRadius:10,color:'#e2e8f0',fontSize:13,marginBottom:10}} />
+              <div style={{display:'flex',gap:8,justifyContent:'flex-end'}}>
+                <button onClick={() => { setConfirmFinalize(false); setMotivoFinal(''); }} style={{padding:'8px 14px',background:'rgba(255,255,255,0.04)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:8,color:'#94a3b8',fontSize:12,fontWeight:600,cursor:'pointer'}}>Cancelar</button>
+                <button onClick={handleFinalize} style={{padding:'8px 14px',background:'linear-gradient(135deg,#16a34a,#22c55e)',border:'none',borderRadius:8,color:'#fff',fontSize:12,fontWeight:700,cursor:'pointer',boxShadow:'0 4px 12px rgba(34,197,94,0.3)'}}>✓ Confirmar Finalização</button>
+              </div>
+            </div>
+          )}
+        </div>
+        
+        <div style={{padding:'18px 24px'}}>
+          <div style={{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,marginBottom:10}}>Histórico ({historico.length})</div>
+          {loadingHist ? (
+            <div style={{padding:14,textAlign:'center',color:'#64748b',fontSize:12}}>Carregando...</div>
+          ) : historico.length === 0 ? (
+            <div style={{padding:14,textAlign:'center',color:'#64748b',fontSize:12}}>Sem histórico ainda.</div>
+          ) : (
+            <div style={{display:'flex',flexDirection:'column',gap:6,maxHeight:260,overflowY:'auto'}}>
+              {historico.map(h => {
+                const icones = {criou:'➕',mudou_status:'🔄',mudou_tags:'🏷',comentou:'💬',finalizou:'✅',auto_finalizou:'✨'};
+                return (
+                  <div key={h.id} style={{padding:'10px 12px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.05)',borderRadius:8,fontSize:12}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4,gap:8}}>
+                      <div style={{display:'flex',alignItems:'center',gap:8,color:'#c4b5fd',fontWeight:600}}>
+                        <span>{icones[h.acao] || '•'}</span><span>{h.por}</span>
+                        {h.de && h.para && <span style={{color:'#64748b',fontWeight:400}}>{h.de} → {h.para}</span>}
+                      </div>
+                      <div style={{fontSize:10,color:'#64748b'}}>{fmtData(h.quando)}</div>
+                    </div>
+                    {h.detalhes && <div style={{color:'#c8d6e5',lineHeight:1.5,whiteSpace:'pre-wrap'}}>{h.detalhes}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
