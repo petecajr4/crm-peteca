@@ -192,6 +192,61 @@ function Home({ user, onLogout }) {
     return () => clearInterval(interval);
   }, [loadKanbans]);
   
+  // FASE A: Polling a cada 30s pra detectar novos Kanbans criados
+  const lastCheckRef = useRef(new Date().toISOString());
+  const [novosCount, setNovosCount] = useState(0);
+  useEffect(() => {
+    const checkNovos = async () => {
+      if (document.hidden) return;
+      const res = await callAPI('hasNewKanbans', { vendedor: user.nome, desde: lastCheckRef.current });
+      if (res.ok && res.novos && res.novos.length > 0) {
+        const count = res.novos.length;
+        setNovosCount(prev => prev + count);
+        // Tocar som de notificação
+        try {
+          const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.connect(gain); gain.connect(audioCtx.destination);
+          osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+          osc.frequency.setValueAtTime(1100, audioCtx.currentTime + 0.08);
+          gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.25);
+          osc.start(audioCtx.currentTime);
+          osc.stop(audioCtx.currentTime + 0.25);
+        } catch(e) {}
+        showToast(`📬 ${count === 1 ? 'Novo cliente no seu Kanban' : count + ' novos clientes no seu Kanban'}: ${res.novos.map(n => n.cliente_nome).slice(0,2).join(', ')}${count > 2 ? '...' : ''}`);
+        lastCheckRef.current = new Date().toISOString();
+        loadKanbans(true); // recarrega pra mostrar as novas bolinhas
+      }
+    };
+    const interval = setInterval(checkNovos, 30000); // 30s
+    return () => clearInterval(interval);
+  // eslint-disable-next-line
+  }, [user.nome]);
+  
+  // FASE A: Badge no título da aba quando tem novos
+  useEffect(() => {
+    const baseTitle = 'CRM PETECA — ' + user.nome;
+    if (novosCount > 0) {
+      document.title = `(${novosCount}) ${baseTitle}`;
+    } else {
+      document.title = baseTitle;
+    }
+  }, [novosCount, user.nome]);
+  
+  // FASE A: Limpar badge quando usuário volta à aba
+  useEffect(() => {
+    const onVisibility = () => {
+      if (!document.hidden && novosCount > 0) {
+        setNovosCount(0);
+        lastCheckRef.current = new Date().toISOString();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, [novosCount]);
+  
   const stats = useMemo(() => {
     const s = { total:0, aberto:0, contato:0, retorno:0, perdido:0 };
     kanbans.forEach(k => { s.total++; if (s[k.status] !== undefined) s[k.status]++; });
