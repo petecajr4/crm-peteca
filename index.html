@@ -203,9 +203,9 @@ function CRMPeteca() {
     setKanbanLoading(false);
   };
 
-  // Auto-sync a cada 2 minutos se estiver na aba Kanbans
+  // Auto-sync a cada 2 minutos se estiver na aba Kanbans ou Abandono
   useEffect(() => {
-    if (tab !== 'kanbans') return;
+    if (tab !== 'kanbans' && tab !== 'abandono') return;
     loadKanbansAdmin();
     const interval = setInterval(() => {
       if (!document.hidden) loadKanbansAdmin();
@@ -1198,6 +1198,67 @@ function CRMPeteca() {
     });
     return s;
   }, [clientes, mods]);
+
+  // v3: Sincronizar clientes com planilha (1x por dia, em background) — pra etiquetas.html
+  useEffect(() => {
+    if (!clientes || clientes.length === 0) return;
+    const CACHE_KEY = 'peteca_clientes_synced_at';
+    const DIA_MS = 24 * 60 * 60 * 1000;
+    
+    try {
+      const ultimoSync = parseInt(localStorage.getItem(CACHE_KEY) || '0');
+      if (Date.now() - ultimoSync < DIA_MS) return; // já sincronizou hoje
+    } catch(e) {}
+    
+    // Extrair endereço do campo `ende` — formato comum: "RUA X, 123" ou "AV Y, 45 SALA 2"
+    const parseEndereco = (ende) => {
+      if (!ende) return { rua: '', numero: '' };
+      const str = String(ende).trim();
+      const match = str.match(/^(.+?),\s*(\d+[a-zA-Z]?)(.*)$/);
+      if (match) return { rua: match[1].trim(), numero: match[2].trim() + (match[3] || '').trim() };
+      return { rua: str, numero: '' };
+    };
+    
+    // Monta payload com clientes ATIVOS (não envia inativos)
+    const clientesPayload = clientes
+      .map(c => getClientData(c))
+      .filter(c => c.a === 1)
+      .map(c => {
+        const { rua, numero } = parseEndereco(c.ende);
+        return {
+          id: c.i,
+          nome: c.n,
+          endereco: rua,
+          numero: numero,
+          bairro: c.b || '',
+          cidade: c.c || '',
+          estado: c.uf || '',
+          cep: c.cep || ''
+        };
+      });
+    
+    // Envia em lotes de 500 via GET (evita CORS e limite de URL)
+    (async () => {
+      try {
+        const LOTE = 500;
+        let total = 0;
+        for (let i = 0; i < clientesPayload.length; i += LOTE) {
+          const lote = clientesPayload.slice(i, i + LOTE);
+          const append = i > 0; // primeiro lote limpa, demais anexam
+          const url = KANBAN_API + '?action=saveClientes&t=' + Date.now() +
+                      '&payload=' + encodeURIComponent(JSON.stringify({ clientes: lote, append: append }));
+          const res = await fetch(url);
+          const data = await res.json();
+          if (!data.ok) throw new Error(data.error || 'Erro no lote ' + (i / LOTE + 1));
+          total += (data.count || 0);
+        }
+        try { localStorage.setItem(CACHE_KEY, String(Date.now())); } catch(e) {}
+        console.log(`✅ ${total} clientes sincronizados com a planilha (etiquetas)`);
+      } catch(e) {
+        console.warn('Sync de clientes falhou (será tentado novamente depois):', e.message);
+      }
+    })();
+  }, [clientes, getClientData]);
 
   // Cidades e IDEs únicos
   const cidades = useMemo(() => {
@@ -4485,6 +4546,28 @@ function CRMPeteca() {
           const clientesComMods = clientes.map(c => getClientData(c));
           const inativosSet = new Set(clientesComMods.filter(c => c.a !== 1).map(c => c.i));
 
+          // v4: mapa de Kanbans ativos (cliente_id -> kanban) + busca por membros IDE
+          const kanbanPorCliente = {};
+          kanbans.forEach(k => {
+            if (String(k.finalizado).toLowerCase() === 'sim') return;
+            // Associa o kanban ao cliente_id original
+            kanbanPorCliente[String(k.cliente_id)] = k;
+          });
+          // Helper: retorna kanban se cliente (ou qualquer membro do grupo IDE) estiver no Kanban
+          const findKanban = (membros) => {
+            if (!Array.isArray(membros)) return null;
+            for (const mid of membros) {
+              if (kanbanPorCliente[String(mid)]) return kanbanPorCliente[String(mid)];
+            }
+            return null;
+          };
+          const STATUS_CORES_KANBAN = {
+            aberto:  { cor: '#60a5fa', label: 'Aberto',           emoji: '🔵' },
+            contato: { cor: '#4ade80', label: 'Em contato',       emoji: '🟢' },
+            retorno: { cor: '#fb923c', label: 'Retorno provável', emoji: '🟠' },
+            perdido: { cor: '#6b7280', label: 'Perdido',          emoji: '⚫' }
+          };
+
           const clienteToCidade = {};
           const clienteToNome = {};
           const clienteAtivo = {};
@@ -4793,6 +4876,9 @@ function CRMPeteca() {
                     const contatos = [...(anotacoes[c.id] || []), ...c.membros.flatMap(mid => anotacoes[mid] || [])].sort((a,b) => (b.data||'').localeCompare(a.data||''));
                     const ultimaAnot = contatos[0];
                     const corBordaAnot = "#3b82f6";
+                    // v4: Detectar se cliente está no Kanban
+                    const kanbanAtivo = findKanban(c.membros);
+                    const kanbanInfo = kanbanAtivo ? STATUS_CORES_KANBAN[kanbanAtivo.status] : null;
                     
                     return (
                       <div key={c.id} style={{
@@ -4808,11 +4894,37 @@ function CRMPeteca() {
                           onMouseEnter={e => e.currentTarget.parentElement.style.background = `rgba(59,130,246,0.08)`}
                           onMouseLeave={e => e.currentTarget.parentElement.style.background = corFundo}
                         >
-                          <div style={{width:14,height:14,borderRadius:"50%",background:semaforo,boxShadow:`0 0 8px ${semaforo}80`,flexShrink:0}}/>
+                          <div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0}}>
+                            <div style={{width:14,height:14,borderRadius:"50%",background:semaforo,boxShadow:`0 0 8px ${semaforo}80`,flexShrink:0}}/>
+                            {kanbanInfo && (
+                              <div title={`🎱 No Kanban de ${kanbanAtivo.vendedor} • ${kanbanInfo.label}`}
+                                style={{
+                                  width:12,height:12,borderRadius:"50%",
+                                  background:`radial-gradient(circle at 35% 30%, ${kanbanInfo.cor}ee, ${kanbanInfo.cor}aa)`,
+                                  border:`1.5px solid ${kanbanInfo.cor}`,
+                                  boxShadow:`0 0 8px ${kanbanInfo.cor}80`,
+                                  flexShrink:0,
+                                  animation:"pulse 2s infinite"
+                                }}/>
+                            )}
+                          </div>
                           <div style={{flex:1,minWidth:0}}>
                             <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3,flexWrap:"wrap"}}>
                               <div style={{fontSize:14,fontWeight:700,color:"#e2e8f0",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{c.nome}</div>
                               {c.isIde && <span style={{padding:"1px 5px",background:"rgba(124,58,237,0.2)",border:"1px solid #7c3aed",borderRadius:3,fontSize:8,color:"#a78bfa",fontWeight:700,whiteSpace:"nowrap",flexShrink:0}}>🔗 {c.membros.length}CNPJs</span>}
+                              {kanbanInfo && (
+                                <span style={{
+                                  padding:"2px 8px",
+                                  background:`${kanbanInfo.cor}22`,
+                                  border:`1px solid ${kanbanInfo.cor}66`,
+                                  borderRadius:10,fontSize:9,
+                                  color:kanbanInfo.cor,
+                                  fontWeight:700,whiteSpace:"nowrap",flexShrink:0,
+                                  display:"inline-flex",alignItems:"center",gap:4
+                                }}>
+                                  🎱 {kanbanAtivo.vendedor}
+                                </span>
+                              )}
                               {contatos.length > 0 && (
                                 <div style={{padding:"2px 8px",background:`${corBordaAnot}22`,border:`1px solid ${corBordaAnot}`,borderRadius:4,fontSize:9,color:corBordaAnot,fontWeight:700,whiteSpace:"nowrap"}}>
                                   📝 {contatos.length}
@@ -5055,27 +5167,75 @@ function CRMPeteca() {
                     );})()}
 
                     {/* KANBAN DE ABANDONO */}
-                    <div style={{background:"linear-gradient(135deg,rgba(99,102,241,0.08),rgba(168,85,247,0.05))",border:"1px solid rgba(168,85,247,0.2)",borderRadius:8,padding:16,marginBottom:10}}>
-                      <div style={{fontSize:11,color:"#c4b5fd",textTransform:"uppercase",letterSpacing:1,fontWeight:600,marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
-                        <span>🎱</span>
-                        <span>Kanban de Abandono</span>
-                      </div>
-                      <div style={{display:"flex",alignItems:"center",gap:14}}>
-                        <div style={{flex:1}}>
-                          <div style={{fontSize:12,color:"#c4b5fd",fontWeight:600,marginBottom:4}}>Enviar cliente ao Kanban do vendedor</div>
-                          <div style={{fontSize:10,color:"#8899bb",lineHeight:1.4}}>
-                            Cria uma bolinha no Kanban de recuperação do vendedor escolhido. Ele verá esse cliente no portal dele e poderá atualizar o status (aberto → em contato → retorno → perdido). Finalização só admin.
+                    {(() => {
+                      const kanbanAtivoModal = findKanban(abandonoModal.membros);
+                      const kanbanInfoModal = kanbanAtivoModal ? STATUS_CORES_KANBAN[kanbanAtivoModal.status] : null;
+                      
+                      if (kanbanAtivoModal) {
+                        // Já existe Kanban: mostra info e desabilita envio
+                        const dataCriacao = kanbanAtivoModal.criado_em 
+                          ? new Date(kanbanAtivoModal.criado_em).toLocaleDateString('pt-BR')
+                          : '—';
+                        return (
+                          <div style={{
+                            background: `linear-gradient(135deg, ${kanbanInfoModal.cor}15, ${kanbanInfoModal.cor}08)`,
+                            border: `1px solid ${kanbanInfoModal.cor}50`,
+                            borderRadius:8,padding:16,marginBottom:10
+                          }}>
+                            <div style={{fontSize:11,color:kanbanInfoModal.cor,textTransform:"uppercase",letterSpacing:1,fontWeight:700,marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
+                              <span>🎱</span>
+                              <span>No Kanban de {kanbanAtivoModal.vendedor}</span>
+                            </div>
+                            <div style={{display:"flex",alignItems:"center",gap:14}}>
+                              <div style={{flex:1}}>
+                                <div style={{fontSize:13,color:"#e2e8f0",fontWeight:700,marginBottom:6,display:"flex",alignItems:"center",gap:8}}>
+                                  <span style={{width:12,height:12,borderRadius:"50%",background:`radial-gradient(circle at 35% 30%,${kanbanInfoModal.cor}ee,${kanbanInfoModal.cor}aa)`,border:`1.5px solid ${kanbanInfoModal.cor}`,boxShadow:`0 0 8px ${kanbanInfoModal.cor}80`}}></span>
+                                  Status: {kanbanInfoModal.label}
+                                </div>
+                                <div style={{fontSize:11,color:"#94a3b8",lineHeight:1.5}}>
+                                  Vendedor <strong style={{color:"#c4b5fd"}}>{kanbanAtivoModal.vendedor}</strong> está responsável por este cliente desde {dataCriacao}.
+                                  {kanbanAtivoModal.tags && (
+                                    <> Tags: <strong style={{color:"#e2e8f0"}}>{String(kanbanAtivoModal.tags).replace(/;/g, ', ')}</strong>.</>
+                                  )}
+                                </div>
+                              </div>
+                              <button disabled style={{
+                                padding:"10px 18px",background:"rgba(107,114,128,0.2)",border:"1px solid rgba(107,114,128,0.3)",borderRadius:8,
+                                color:"#94a3b8",fontSize:11,fontWeight:600,cursor:"default",whiteSpace:"nowrap"
+                              }}>✓ Já no Kanban</button>
+                            </div>
+                            <div style={{marginTop:10,padding:"8px 10px",background:"rgba(0,0,0,0.2)",borderRadius:6,fontSize:10,color:"#94a3b8",lineHeight:1.4}}>
+                              💡 Para ver detalhes, mudar status ou finalizar, acesse a aba <strong style={{color:"#c4b5fd"}}>🎱 Kanbans</strong> no menu lateral.
+                            </div>
+                          </div>
+                        );
+                      }
+                      
+                      // Não tem Kanban: mostra botão padrão
+                      return (
+                        <div style={{background:"linear-gradient(135deg,rgba(99,102,241,0.08),rgba(168,85,247,0.05))",border:"1px solid rgba(168,85,247,0.2)",borderRadius:8,padding:16,marginBottom:10}}>
+                          <div style={{fontSize:11,color:"#c4b5fd",textTransform:"uppercase",letterSpacing:1,fontWeight:600,marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
+                            <span>🎱</span>
+                            <span>Kanban de Abandono</span>
+                          </div>
+                          <div style={{display:"flex",alignItems:"center",gap:14}}>
+                            <div style={{flex:1}}>
+                              <div style={{fontSize:12,color:"#c4b5fd",fontWeight:600,marginBottom:4}}>Enviar cliente ao Kanban do vendedor</div>
+                              <div style={{fontSize:10,color:"#8899bb",lineHeight:1.4}}>
+                                Cria uma bolinha no Kanban de recuperação do vendedor escolhido. Ele verá esse cliente no portal dele e poderá atualizar o status (aberto → em contato → retorno → perdido). Finalização só admin.
+                              </div>
+                            </div>
+                            <button onClick={() => {
+                              setEnviarKanbanModal({ cliente: abandonoModal });
+                            }} style={{
+                              padding:"10px 18px",background:"linear-gradient(135deg,#6366f1,#a855f7)",border:"none",borderRadius:8,
+                              color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap",
+                              boxShadow:"0 4px 12px rgba(99,102,241,0.3)"
+                            }}>🎱 Enviar ao Kanban</button>
                           </div>
                         </div>
-                        <button onClick={() => {
-                          setEnviarKanbanModal({ cliente: abandonoModal });
-                        }} style={{
-                          padding:"10px 18px",background:"linear-gradient(135deg,#6366f1,#a855f7)",border:"none",borderRadius:8,
-                          color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap",
-                          boxShadow:"0 4px 12px rgba(99,102,241,0.3)"
-                        }}>🎱 Enviar ao Kanban</button>
-                      </div>
-                    </div>
+                      );
+                    })()}
 
                     {/* ZONA DE PERIGO: Ocultar cliente */}
                     <div style={{background:"linear-gradient(135deg,#1a0a0a,#2a1010)",border:"1px solid #5c2020",borderRadius:8,padding:16}}>
