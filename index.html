@@ -7245,12 +7245,25 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
   const draggingRef = useRef(null);
   const [, setTick] = useState(0);
   
-  // Grupos por cidade para linhas elásticas
+  // Grupos por cidade para linhas (sempre visíveis) — mapa cidade -> array de ids
   const gruposCidade = useMemo(() => {
-    if (!cidadeDestacada) return [];
-    const ids = kanbans.filter(k => k.cliente_cidade === cidadeDestacada).map(k => k.id);
-    return ids.length >= 2 ? [ids] : [];
-  }, [kanbans, cidadeDestacada]);
+    const mapa = {};
+    kanbans.forEach(k => {
+      const cidade = k.cliente_cidade || '—';
+      if (!mapa[cidade]) mapa[cidade] = [];
+      mapa[cidade].push(k.id);
+    });
+    // Só retorna grupos com 2+ bolinhas e gera uma cor por cidade
+    return Object.entries(mapa)
+      .filter(([_, ids]) => ids.length >= 2)
+      .map(([cidade, ids], i) => {
+        // Cor derivada do hash da cidade (estável)
+        let hash = 0;
+        for (let c = 0; c < cidade.length; c++) hash = ((hash << 5) - hash) + cidade.charCodeAt(c);
+        const hue = Math.abs(hash) % 360;
+        return { cidade, ids, cor: `hsl(${hue}, 60%, 65%)` };
+      });
+  }, [kanbans]);
   
   const STATUS_CORES = {
     aberto:  { cor: '#60a5fa', corEscura: '#2563eb' },
@@ -7368,27 +7381,31 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
         }
       }
       
-      // Forças elásticas entre bolinhas da mesma cidade (molas)
-      gruposCidade.forEach(grupo => {
-        const distalvo = 180; // distância "ideal" da mola
-        const k_mola = 0.0012; // constante da mola (suave)
-        for (let i = 0; i < grupo.length; i++) {
-          for (let j = i+1; j < grupo.length; j++) {
-            const a = parts[grupo[i]]; const b = parts[grupo[j]];
-            if (!a || !b) continue;
-            const dx = b.x - a.x; const dy = b.y - a.y;
-            const dist = Math.sqrt(dx*dx + dy*dy);
-            if (dist < 1) continue;
-            const nx = dx/dist; const ny = dy/dist;
-            // Força proporcional à diferença da distância alvo
-            const forca = (dist - distalvo) * k_mola;
-            a.vx += nx * forca;
-            a.vy += ny * forca;
-            b.vx -= nx * forca;
-            b.vy -= ny * forca;
+      // Forças elásticas entre bolinhas da mesma cidade (só ativam quando arrastando uma do grupo)
+      const dragId = draggingRef.current?.id;
+      if (dragId) {
+        gruposCidade.forEach(grupo => {
+          // Só aplica se a bolinha arrastada pertence a esse grupo
+          if (!grupo.ids.includes(dragId)) return;
+          const distalvo = 180;
+          const k_mola = 0.0025; // mais forte quando arrastando
+          for (let i = 0; i < grupo.ids.length; i++) {
+            for (let j = i+1; j < grupo.ids.length; j++) {
+              const a = parts[grupo.ids[i]]; const b = parts[grupo.ids[j]];
+              if (!a || !b) continue;
+              const dx = b.x - a.x; const dy = b.y - a.y;
+              const dist = Math.sqrt(dx*dx + dy*dy);
+              if (dist < 1) continue;
+              const nx = dx/dist; const ny = dy/dist;
+              const forca = (dist - distalvo) * k_mola;
+              a.vx += nx * forca;
+              a.vy += ny * forca;
+              b.vx -= nx * forca;
+              b.vy -= ny * forca;
+            }
           }
-        }
-      });
+        });
+      }
       
       setTick(t => t + 1);
       requestAnimationFrame(tickFn);
@@ -7439,43 +7456,55 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
       <div style={{position:'absolute',left:0,right:0,top:'70%',height:1,background:'linear-gradient(90deg, transparent, rgba(107,114,128,0.2), transparent)',pointerEvents:'none'}}></div>
       <div style={{position:'absolute',left:14,top:'calc(70% + 8px)',fontSize:9,color:'rgba(107,114,128,0.5)',letterSpacing:2,textTransform:'uppercase',fontWeight:600,pointerEvents:'none'}}>⚫ Perdidos</div>
       
-      {/* SVG com linhas conectando bolinhas da mesma cidade */}
-      {cidadeDestacada && gruposCidade.length > 0 && (
+      {/* SVG com linhas conectando bolinhas da mesma cidade (sempre visíveis) */}
+      {gruposCidade.length > 0 && (
         <svg style={{position:'absolute',inset:0,width:'100%',height:'100%',pointerEvents:'none',zIndex:1}}>
           {gruposCidade.flatMap(grupo => {
             const pares = [];
-            for (let i = 0; i < grupo.length; i++) {
-              for (let j = i+1; j < grupo.length; j++) {
-                const a = particlesRef.current[grupo[i]];
-                const b = particlesRef.current[grupo[j]];
-                if (a && b) pares.push({a, b, key: grupo[i]+'_'+grupo[j]});
+            for (let i = 0; i < grupo.ids.length; i++) {
+              for (let j = i+1; j < grupo.ids.length; j++) {
+                const a = particlesRef.current[grupo.ids[i]];
+                const b = particlesRef.current[grupo.ids[j]];
+                if (a && b) pares.push({a, b, key: grupo.ids[i]+'_'+grupo.ids[j], cor: grupo.cor, cidade: grupo.cidade});
               }
             }
-            return pares.map(({a, b, key}) => (
+            return pares;
+          }).map(({a, b, key, cor, cidade}) => {
+            // Destacar se o grupo dessa cidade está sendo arrastado
+            const isHighlight = cidadeDestacada === cidade;
+            return (
               <line key={key} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-                stroke="rgba(148,163,184,0.25)" strokeWidth="1" strokeDasharray="3 4"/>
-            ));
+                stroke={cor} 
+                strokeWidth={isHighlight ? 1.8 : 1}
+                strokeDasharray={isHighlight ? "none" : "4 5"}
+                strokeOpacity={isHighlight ? 0.7 : 0.35}
+                style={{transition:"stroke-opacity .2s, stroke-width .2s"}}/>
+            );
           })}
         </svg>
       )}
       
-      {/* Tag flutuante da cidade destacada */}
-      {cidadeDestacada && (
-        <div style={{
-          position:'absolute',top:14,left:14,
-          padding:'8px 14px',
-          background:'linear-gradient(135deg,rgba(99,102,241,0.2),rgba(168,85,247,0.15))',
-          backdropFilter:'blur(16px)',
-          border:'1px solid rgba(168,85,247,0.3)',
-          borderRadius:100,fontSize:11,color:'#c4b5fd',fontWeight:600,
-          zIndex:20,boxShadow:'0 4px 12px rgba(168,85,247,0.2)',
-          display:'flex',alignItems:'center',gap:6
-        }}>
-          <span>📍</span>
-          <span>{cidadeDestacada}</span>
-          <span style={{background:'rgba(168,85,247,0.3)',padding:'2px 7px',borderRadius:10,fontSize:10}}>{gruposCidade[0]?.length || 0}</span>
-        </div>
-      )}
+      {/* Tag flutuante da cidade destacada (só se tem filtro) */}
+      {cidadeDestacada && (() => {
+        const grupo = gruposCidade.find(g => g.cidade === cidadeDestacada);
+        const qtd = grupo ? grupo.ids.length : 0;
+        return (
+          <div style={{
+            position:'absolute',top:14,left:14,
+            padding:'8px 14px',
+            background:'linear-gradient(135deg,rgba(99,102,241,0.2),rgba(168,85,247,0.15))',
+            backdropFilter:'blur(16px)',
+            border:'1px solid rgba(168,85,247,0.3)',
+            borderRadius:100,fontSize:11,color:'#c4b5fd',fontWeight:600,
+            zIndex:20,boxShadow:'0 4px 12px rgba(168,85,247,0.2)',
+            display:'flex',alignItems:'center',gap:6
+          }}>
+            <span>📍</span>
+            <span>{cidadeDestacada}</span>
+            <span style={{background:'rgba(168,85,247,0.3)',padding:'2px 7px',borderRadius:10,fontSize:10}}>{qtd}</span>
+          </div>
+        );
+      })()}
       
       {/* Legenda flutuante */}
       <div style={{position:'absolute',top:14,right:14,display:'flex',gap:12,padding:'8px 14px',background:'rgba(13,21,38,0.85)',backdropFilter:'blur(16px)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:100,fontSize:11,color:'#94a3b8',fontWeight:500,zIndex:20,boxShadow:'0 4px 12px rgba(0,0,0,0.3)'}}>
