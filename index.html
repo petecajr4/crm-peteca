@@ -179,6 +179,11 @@ function CRMPeteca() {
   useEffect(() => {
     try { localStorage.setItem('peteca_kanban_view', kanbanViewMode); } catch(e) {}
   }, [kanbanViewMode]);
+  const [kanbanSubTab, setKanbanSubTab] = useState('kanbans'); // kanbans | tags | uso
+  const [kanbanFiltroCidade, setKanbanFiltroCidade] = useState('TODAS');
+  const [kanbanStats, setKanbanStats] = useState(null); // { uso: [], topTags: [] }
+  const [gerenciarTagsModal, setGerenciarTagsModal] = useState(false);
+  const [gerenciarVendedoresModal, setGerenciarVendedoresModal] = useState(false);
   const [kanbanFiltroVendedor, setKanbanFiltroVendedor] = useState('TODOS');
   const [kanbanDetalhe, setKanbanDetalhe] = useState(null); // kanban selecionado no admin
   const [enviarKanbanModal, setEnviarKanbanModal] = useState(null); // {cliente, vendedor, obs}
@@ -186,12 +191,14 @@ function CRMPeteca() {
 
   const loadKanbansAdmin = async () => {
     setKanbanLoading(true);
-    const [resK, resT] = await Promise.all([
+    const [resK, resT, resS] = await Promise.all([
       callKanbanAPI('getAll'),
-      callKanbanAPI('getTags')
+      callKanbanAPI('getTags'),
+      callKanbanAPI('getStats')
     ]);
     if (resK.ok) setKanbans(resK.kanbans);
     if (resT.ok) setKanbanTags(resT.tags);
+    if (resS.ok) setKanbanStats({ uso: resS.uso, topTags: resS.topTags });
     setKanbanLastSync(Date.now());
     setKanbanLoading(false);
   };
@@ -5596,10 +5603,13 @@ function CRMPeteca() {
             perdido: { cor: '#6b7280', label: 'Perdido',          emoji: '⚫' }
           };
           
+          // Cidades únicas para filtro
+          const cidadesDisp = ['TODAS', ...new Set(ativos.map(k => k.cliente_cidade).filter(Boolean))].sort();
+          
           return (
             <div style={{animation:"fadeIn .4s ease"}}>
               {/* Header da aba */}
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:12}}>
                 <div>
                   <div style={{fontSize:22,fontWeight:800,letterSpacing:-0.5,display:"flex",alignItems:"center",gap:10}}>
                     <span>🎱</span>
@@ -5610,10 +5620,44 @@ function CRMPeteca() {
                     {kanbanLastSync && <span> • Sync {Math.floor((Date.now() - kanbanLastSync) / 60000)}min atrás</span>}
                   </div>
                 </div>
-                <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  {/* Filtro vendedor (só no modo bolinhas) */}
-                  {kanbanViewMode === 'bolinhas' && vendedoresOrdenados.length > 0 && (
-                    <select value={kanbanFiltroVendedor} onChange={e => setKanbanFiltroVendedor(e.target.value)} style={{padding:"9px 14px",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,color:"#c8d6e5",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                  <button onClick={() => setGerenciarTagsModal(true)} style={{padding:"9px 14px",background:"rgba(168,85,247,0.1)",border:"1px solid rgba(168,85,247,0.25)",borderRadius:10,color:"#c4b5fd",fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>🏷 Tags</button>
+                  <button onClick={() => setGerenciarVendedoresModal(true)} style={{padding:"9px 14px",background:"rgba(16,185,129,0.08)",border:"1px solid rgba(16,185,129,0.25)",borderRadius:10,color:"#86efac",fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>👥 Vendedores</button>
+                  <button onClick={loadKanbansAdmin} disabled={kanbanLoading} style={{padding:"9px 14px",background:"rgba(99,102,241,0.1)",border:"1px solid rgba(99,102,241,0.25)",borderRadius:10,color:"#c4b5fd",fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:8,cursor:"pointer"}}>
+                    <span style={{display:"inline-block",animation:kanbanLoading?"spin 1s linear infinite":"none"}}>🔄</span>
+                    Atualizar
+                  </button>
+                </div>
+              </div>
+              
+              {/* SUB-ABAS */}
+              <div style={{display:"flex",gap:4,marginBottom:20,borderBottom:"1px solid rgba(255,255,255,0.06)"}}>
+                {[
+                  {key:'kanbans', label:'🎱 Kanbans', count: statsGeral.total},
+                  {key:'tags', label:'📊 Top Tags', count: null},
+                  {key:'uso', label:'⏱ Uso da equipe', count: null}
+                ].map(st => (
+                  <button key={st.key} onClick={() => setKanbanSubTab(st.key)} style={{
+                    padding:"10px 18px",fontSize:13,fontWeight:kanbanSubTab===st.key?700:500,
+                    color: kanbanSubTab===st.key?"#c4b5fd":"#64748b",
+                    background:"transparent",border:"none",
+                    borderBottom: kanbanSubTab===st.key ? "2px solid #a855f7" : "2px solid transparent",
+                    marginBottom:-1,cursor:"pointer",transition:"all .15s",
+                    display:"flex",alignItems:"center",gap:6
+                  }}>
+                    {st.label}
+                    {st.count !== null && <span style={{background:kanbanSubTab===st.key?"rgba(168,85,247,0.2)":"rgba(255,255,255,0.05)",padding:"1px 7px",borderRadius:10,fontSize:10}}>{st.count}</span>}
+                  </button>
+                ))}
+              </div>
+              
+              {/* ============ SUB-ABA: KANBANS ============ */}
+              {kanbanSubTab === 'kanbans' && (
+              <>
+              <div style={{display:"flex",justifyContent:"flex-end",alignItems:"center",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+                  {/* Filtro vendedor */}
+                  {vendedoresOrdenados.length > 0 && (
+                    <select value={kanbanFiltroVendedor} onChange={e => setKanbanFiltroVendedor(e.target.value)} style={{padding:"8px 12px",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,color:"#c8d6e5",fontSize:12,fontWeight:600,cursor:"pointer"}}>
                       <option value="TODOS">👥 Todos vendedores</option>
                       {vendedoresOrdenados.map(v => (
                         <option key={v.nome} value={v.nome}>👤 {v.nome} ({v.total})</option>
@@ -5621,30 +5665,34 @@ function CRMPeteca() {
                     </select>
                   )}
                   
+                  {/* Filtro cidade */}
+                  <select value={kanbanFiltroCidade} onChange={e => setKanbanFiltroCidade(e.target.value)} style={{padding:"8px 12px",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,color:"#c8d6e5",fontSize:12,fontWeight:600,cursor:"pointer"}}>
+                    {cidadesDisp.map(c => (
+                      <option key={c} value={c}>{c === 'TODAS' ? '🏙 Todas cidades' : '📍 ' + c}</option>
+                    ))}
+                  </select>
+                  
                   {/* Toggle de modo */}
                   <div style={{display:"flex",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:10,padding:3,gap:2}}>
                     <button onClick={() => setKanbanViewMode('blocos')} title="Visão em blocos (gerencial)" style={{
-                      padding:"7px 12px",borderRadius:7,
+                      padding:"6px 12px",borderRadius:7,
                       background: kanbanViewMode === 'blocos' ? "linear-gradient(135deg,#6366f1,#a855f7)" : "transparent",
                       border:"none",color: kanbanViewMode === 'blocos' ? "#fff" : "#94a3b8",
                       fontSize:12,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",gap:6
                     }}>📋 Blocos</button>
                     <button onClick={() => setKanbanViewMode('bolinhas')} title="Visão em bolinhas flutuantes" style={{
-                      padding:"7px 12px",borderRadius:7,
+                      padding:"6px 12px",borderRadius:7,
                       background: kanbanViewMode === 'bolinhas' ? "linear-gradient(135deg,#6366f1,#a855f7)" : "transparent",
                       border:"none",color: kanbanViewMode === 'bolinhas' ? "#fff" : "#94a3b8",
                       fontSize:12,fontWeight:600,cursor:"pointer",display:"flex",alignItems:"center",gap:6
                     }}>🎱 Bolinhas</button>
                   </div>
-                  
-                  <button onClick={loadKanbansAdmin} disabled={kanbanLoading} style={{padding:"9px 14px",background:"rgba(99,102,241,0.1)",border:"1px solid rgba(99,102,241,0.25)",borderRadius:10,color:"#c4b5fd",fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:8}}>
-                    <span style={{display:"inline-block",animation:kanbanLoading?"spin 1s linear infinite":"none"}}>🔄</span>
-                    Atualizar
-                  </button>
                 </div>
-              </div>
+              </>
+              )}
               
-              {kanbanLoading && kanbans.length === 0 ? (
+              {/* ============ CONTEÚDO: KANBANS ============ */}
+              {kanbanSubTab === 'kanbans' && (kanbanLoading && kanbans.length === 0 ? (
                 <div style={{padding:60,textAlign:"center"}}>
                   <div style={{display:"inline-flex",flexDirection:"column",alignItems:"center",gap:12}}>
                     <div style={{width:36,height:36,border:"3px solid rgba(99,102,241,0.2)",borderTopColor:"#6366f1",borderRadius:"50%",animation:"spin 1s linear infinite"}}></div>
@@ -5677,7 +5725,11 @@ function CRMPeteca() {
                     </div>
                   ) : kanbanViewMode === 'bolinhas' ? (
                     <KanbanBolinhasAdmin
-                      kanbans={ativos.filter(k => kanbanFiltroVendedor === 'TODOS' || k.vendedor === kanbanFiltroVendedor)}
+                      kanbans={ativos.filter(k => 
+                        (kanbanFiltroVendedor === 'TODOS' || k.vendedor === kanbanFiltroVendedor) &&
+                        (kanbanFiltroCidade === 'TODAS' || k.cliente_cidade === kanbanFiltroCidade)
+                      )}
+                      cidadeDestacada={kanbanFiltroCidade !== 'TODAS' ? kanbanFiltroCidade : null}
                       onSelectKanban={(id) => setKanbanDetalhe(ativos.find(k => k.id === id))}
                     />
                   ) : (
@@ -5708,7 +5760,7 @@ function CRMPeteca() {
                           {/* Lista de kanbans do vendedor */}
                           <div style={{padding:"10px 12px"}}>
                             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:8}}>
-                              {ativos.filter(k => k.vendedor === v.nome).map(k => {
+                              {ativos.filter(k => k.vendedor === v.nome && (kanbanFiltroCidade === 'TODAS' || k.cliente_cidade === kanbanFiltroCidade)).map(k => {
                                 const s = STATUS_CORES[k.status] || STATUS_CORES.aberto;
                                 return (
                                   <div key={k.id} 
@@ -5746,6 +5798,136 @@ function CRMPeteca() {
                     </div>
                   )}
                 </>
+              ))}
+              
+              {/* ============ SUB-ABA: TOP TAGS ============ */}
+              {kanbanSubTab === 'tags' && (
+                <div style={{animation:"fadeIn .3s"}}>
+                  <div style={{fontSize:14,fontWeight:700,marginBottom:14,color:"#e2e8f0"}}>📊 Top 10 Motivos/Tags mais usados</div>
+                  {(!kanbanStats || !kanbanStats.topTags || kanbanStats.topTags.length === 0) ? (
+                    <div style={{padding:60,textAlign:"center",background:"rgba(20,28,48,0.4)",border:"1px solid rgba(255,255,255,0.05)",borderRadius:16}}>
+                      <div style={{fontSize:48,marginBottom:14}}>🏷</div>
+                      <div style={{fontSize:15,fontWeight:700,marginBottom:6}}>Nenhuma tag usada ainda</div>
+                      <div style={{fontSize:12,color:"#64748b"}}>Quando vendedores ou admin marcarem tags nos Kanbans, os motivos aparecerão aqui ranqueados.</div>
+                    </div>
+                  ) : (() => {
+                    const max = kanbanStats.topTags[0].count;
+                    return (
+                      <div className="card-hover" style={{background:"rgba(20,28,48,0.6)",backdropFilter:"blur(20px)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,padding:24}}>
+                        {kanbanStats.topTags.map((t, i) => {
+                          const pct = (t.count / max) * 100;
+                          const tagInfo = kanbanTags.find(kt => kt.nome === t.nome);
+                          const cor = tagInfo?.cor || '#a855f7';
+                          return (
+                            <div key={t.nome} style={{marginBottom:i === kanbanStats.topTags.length-1 ? 0 : 14}}>
+                              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,gap:12}}>
+                                <div style={{fontSize:13,fontWeight:600,color:"#e2e8f0",display:"flex",alignItems:"center",gap:8}}>
+                                  <span style={{width:24,height:24,borderRadius:"50%",background:`linear-gradient(135deg,${cor},${cor}88)`,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,color:"#fff",boxShadow:`0 2px 8px ${cor}50`}}>{i+1}</span>
+                                  <span>{t.nome}</span>
+                                </div>
+                                <div style={{fontSize:13,fontWeight:700,color:cor}}>{t.count} {t.count === 1 ? 'uso' : 'usos'}</div>
+                              </div>
+                              <div style={{height:10,background:"rgba(255,255,255,0.04)",borderRadius:5,overflow:"hidden",position:"relative"}}>
+                                <div style={{
+                                  position:"absolute",left:0,top:0,bottom:0,
+                                  width:pct+"%",
+                                  background:`linear-gradient(90deg,${cor},${cor}cc)`,
+                                  borderRadius:5,
+                                  boxShadow:`0 0 12px ${cor}66`,
+                                  transition:"width .6s cubic-bezier(.4,0,.2,1)"
+                                }}></div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+              
+              {/* ============ SUB-ABA: USO DA EQUIPE ============ */}
+              {kanbanSubTab === 'uso' && (
+                <div style={{animation:"fadeIn .3s"}}>
+                  <div style={{fontSize:14,fontWeight:700,marginBottom:14,color:"#e2e8f0"}}>⏱ Uso da equipe — últimos logins e atividade</div>
+                  {(!kanbanStats || !kanbanStats.uso) ? (
+                    <div style={{padding:60,textAlign:"center"}}>
+                      <div style={{display:"inline-flex",flexDirection:"column",alignItems:"center",gap:12}}>
+                        <div style={{width:36,height:36,border:"3px solid rgba(99,102,241,0.2)",borderTopColor:"#6366f1",borderRadius:"50%",animation:"spin 1s linear infinite"}}></div>
+                        <div style={{fontSize:13,color:"#64748b"}}>Carregando estatísticas...</div>
+                      </div>
+                    </div>
+                  ) : (() => {
+                    const fmtTempoAtras = (dt) => {
+                      if (!dt) return 'Nunca acessou';
+                      const diff = Date.now() - new Date(dt).getTime();
+                      const mins = Math.floor(diff / 60000);
+                      if (mins < 60) return mins <= 1 ? 'agora mesmo' : `há ${mins}min`;
+                      const hrs = Math.floor(mins / 60);
+                      if (hrs < 24) return `há ${hrs}h`;
+                      const dias = Math.floor(hrs / 24);
+                      if (dias < 30) return `há ${dias}d`;
+                      return new Date(dt).toLocaleDateString('pt-BR');
+                    };
+                    const corAtividade = (u) => {
+                      if (!u.ultimoLogin) return { cor: '#6b7280', label: 'Nunca entrou', emoji: '⚪' };
+                      const diff = Date.now() - new Date(u.ultimoLogin).getTime();
+                      const dias = diff / 86400000;
+                      if (dias < 1) return { cor: '#22c55e', label: 'Ativo hoje', emoji: '🟢' };
+                      if (dias < 3) return { cor: '#84cc16', label: 'Ativo recente', emoji: '🟡' };
+                      if (dias < 7) return { cor: '#eab308', label: 'Esta semana', emoji: '🟠' };
+                      if (dias < 14) return { cor: '#f97316', label: 'Inativo', emoji: '🔶' };
+                      return { cor: '#ef4444', label: 'Muito inativo', emoji: '🔴' };
+                    };
+                    const usoOrdenado = [...kanbanStats.uso].sort((a,b) => {
+                      const aT = a.ultimoLogin ? new Date(a.ultimoLogin).getTime() : 0;
+                      const bT = b.ultimoLogin ? new Date(b.ultimoLogin).getTime() : 0;
+                      return bT - aT;
+                    });
+                    return (
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(320px,1fr))",gap:12}}>
+                        {usoOrdenado.map(u => {
+                          const ativ = corAtividade(u);
+                          return (
+                            <div key={u.nome} className="card-hover" style={{background:"rgba(20,28,48,0.6)",backdropFilter:"blur(20px)",border:`1px solid ${ativ.cor}40`,borderRadius:14,padding:18}}>
+                              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,gap:10}}>
+                                <div>
+                                  <div style={{fontSize:14,fontWeight:800,color:"#e2e8f0",display:"flex",alignItems:"center",gap:8}}>
+                                    <span style={{fontSize:16}}>{u.tipo === 'admin' ? '👑' : '👤'}</span>
+                                    <span>{u.nome}</span>
+                                    {u.tipo === 'admin' && <span style={{fontSize:9,background:"rgba(99,102,241,0.15)",color:"#a5b4fc",padding:"2px 6px",borderRadius:4,fontWeight:700,letterSpacing:1,textTransform:"uppercase",border:"1px solid rgba(99,102,241,0.3)"}}>ADMIN</span>}
+                                  </div>
+                                </div>
+                                <div style={{padding:"4px 10px",borderRadius:16,background:`${ativ.cor}20`,color:ativ.cor,border:`1px solid ${ativ.cor}50`,fontSize:10,fontWeight:700,letterSpacing:0.5,display:"flex",alignItems:"center",gap:4,whiteSpace:"nowrap"}}>
+                                  <span>{ativ.emoji}</span>
+                                  <span>{ativ.label}</span>
+                                </div>
+                              </div>
+                              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+                                <div style={{padding:"8px 10px",background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.05)",borderRadius:8}}>
+                                  <div style={{fontSize:9,color:"#64748b",textTransform:"uppercase",letterSpacing:0.8,fontWeight:600,marginBottom:2}}>Último acesso</div>
+                                  <div style={{fontSize:12,color:"#e2e8f0",fontWeight:600}}>{fmtTempoAtras(u.ultimoLogin)}</div>
+                                </div>
+                                <div style={{padding:"8px 10px",background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.05)",borderRadius:8}}>
+                                  <div style={{fontSize:9,color:"#64748b",textTransform:"uppercase",letterSpacing:0.8,fontWeight:600,marginBottom:2}}>Logins (7 dias)</div>
+                                  <div style={{fontSize:12,color:"#e2e8f0",fontWeight:600}}>{u.loginsUltimos7d} {u.loginsHoje > 0 && <span style={{color:"#22c55e",fontSize:10,marginLeft:4}}>(+{u.loginsHoje} hoje)</span>}</div>
+                                </div>
+                                <div style={{padding:"8px 10px",background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.05)",borderRadius:8}}>
+                                  <div style={{fontSize:9,color:"#64748b",textTransform:"uppercase",letterSpacing:0.8,fontWeight:600,marginBottom:2}}>Total de logins</div>
+                                  <div style={{fontSize:12,color:"#e2e8f0",fontWeight:600}}>{u.totalLogins}</div>
+                                </div>
+                                <div style={{padding:"8px 10px",background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.05)",borderRadius:8}}>
+                                  <div style={{fontSize:9,color:"#64748b",textTransform:"uppercase",letterSpacing:0.8,fontWeight:600,marginBottom:2}}>Ações (30 dias)</div>
+                                  <div style={{fontSize:12,color:"#e2e8f0",fontWeight:600}}>{u.acoesUltimos30d}</div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+                </div>
               )}
             </div>
           );
@@ -6980,6 +7162,23 @@ function CRMPeteca() {
         />
       )}
 
+      {/* MODAL GERENCIAR TAGS (admin) */}
+      {gerenciarTagsModal && (
+        <GerenciarTagsModal
+          onClose={() => setGerenciarTagsModal(false)}
+          onReload={loadKanbansAdmin}
+          showToast={showToast}
+        />
+      )}
+      
+      {/* MODAL GERENCIAR VENDEDORES (admin) */}
+      {gerenciarVendedoresModal && (
+        <GerenciarVendedoresModal
+          onClose={() => setGerenciarVendedoresModal(false)}
+          showToast={showToast}
+        />
+      )}
+      
       {/* MODAL LOGIN ADMIN (opcional) */}
       {adminLoginModal && (() => {
         const [loginNome, setLoginNome] = [null, null]; // placeholders - use refs internos
@@ -7039,12 +7238,19 @@ function CRMPeteca() {
 // ============================================================
 // KANBAN BOLINHAS (admin) — versão simplificada do vendedor
 // ============================================================
-function KanbanBolinhasAdmin({ kanbans, onSelectKanban }) {
+function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
   const containerRef = useRef(null);
   const [dimensions, setDimensions] = useState({ w: 800, h: 600 });
   const particlesRef = useRef({});
   const draggingRef = useRef(null);
   const [, setTick] = useState(0);
+  
+  // Grupos por cidade para linhas elásticas
+  const gruposCidade = useMemo(() => {
+    if (!cidadeDestacada) return [];
+    const ids = kanbans.filter(k => k.cliente_cidade === cidadeDestacada).map(k => k.id);
+    return ids.length >= 2 ? [ids] : [];
+  }, [kanbans, cidadeDestacada]);
   
   const STATUS_CORES = {
     aberto:  { cor: '#60a5fa', corEscura: '#2563eb' },
@@ -7161,12 +7367,35 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban }) {
           }
         }
       }
+      
+      // Forças elásticas entre bolinhas da mesma cidade (molas)
+      gruposCidade.forEach(grupo => {
+        const distalvo = 180; // distância "ideal" da mola
+        const k_mola = 0.0012; // constante da mola (suave)
+        for (let i = 0; i < grupo.length; i++) {
+          for (let j = i+1; j < grupo.length; j++) {
+            const a = parts[grupo[i]]; const b = parts[grupo[j]];
+            if (!a || !b) continue;
+            const dx = b.x - a.x; const dy = b.y - a.y;
+            const dist = Math.sqrt(dx*dx + dy*dy);
+            if (dist < 1) continue;
+            const nx = dx/dist; const ny = dy/dist;
+            // Força proporcional à diferença da distância alvo
+            const forca = (dist - distalvo) * k_mola;
+            a.vx += nx * forca;
+            a.vy += ny * forca;
+            b.vx -= nx * forca;
+            b.vy -= ny * forca;
+          }
+        }
+      });
+      
       setTick(t => t + 1);
       requestAnimationFrame(tickFn);
     };
     const raf = requestAnimationFrame(tickFn);
     return () => { running = false; cancelAnimationFrame(raf); };
-  }, [kanbans, dimensions]);
+  }, [kanbans, dimensions, gruposCidade]);
   
   const onMouseDown = (e, id) => {
     const rect = containerRef.current.getBoundingClientRect();
@@ -7209,6 +7438,44 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban }) {
     >
       <div style={{position:'absolute',left:0,right:0,top:'70%',height:1,background:'linear-gradient(90deg, transparent, rgba(107,114,128,0.2), transparent)',pointerEvents:'none'}}></div>
       <div style={{position:'absolute',left:14,top:'calc(70% + 8px)',fontSize:9,color:'rgba(107,114,128,0.5)',letterSpacing:2,textTransform:'uppercase',fontWeight:600,pointerEvents:'none'}}>⚫ Perdidos</div>
+      
+      {/* SVG com linhas conectando bolinhas da mesma cidade */}
+      {cidadeDestacada && gruposCidade.length > 0 && (
+        <svg style={{position:'absolute',inset:0,width:'100%',height:'100%',pointerEvents:'none',zIndex:1}}>
+          {gruposCidade.flatMap(grupo => {
+            const pares = [];
+            for (let i = 0; i < grupo.length; i++) {
+              for (let j = i+1; j < grupo.length; j++) {
+                const a = particlesRef.current[grupo[i]];
+                const b = particlesRef.current[grupo[j]];
+                if (a && b) pares.push({a, b, key: grupo[i]+'_'+grupo[j]});
+              }
+            }
+            return pares.map(({a, b, key}) => (
+              <line key={key} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+                stroke="rgba(148,163,184,0.25)" strokeWidth="1" strokeDasharray="3 4"/>
+            ));
+          })}
+        </svg>
+      )}
+      
+      {/* Tag flutuante da cidade destacada */}
+      {cidadeDestacada && (
+        <div style={{
+          position:'absolute',top:14,left:14,
+          padding:'8px 14px',
+          background:'linear-gradient(135deg,rgba(99,102,241,0.2),rgba(168,85,247,0.15))',
+          backdropFilter:'blur(16px)',
+          border:'1px solid rgba(168,85,247,0.3)',
+          borderRadius:100,fontSize:11,color:'#c4b5fd',fontWeight:600,
+          zIndex:20,boxShadow:'0 4px 12px rgba(168,85,247,0.2)',
+          display:'flex',alignItems:'center',gap:6
+        }}>
+          <span>📍</span>
+          <span>{cidadeDestacada}</span>
+          <span style={{background:'rgba(168,85,247,0.3)',padding:'2px 7px',borderRadius:10,fontSize:10}}>{gruposCidade[0]?.length || 0}</span>
+        </div>
+      )}
       
       {/* Legenda flutuante */}
       <div style={{position:'absolute',top:14,right:14,display:'flex',gap:12,padding:'8px 14px',background:'rgba(13,21,38,0.85)',backdropFilter:'blur(16px)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:100,fontSize:11,color:'#94a3b8',fontWeight:500,zIndex:20,boxShadow:'0 4px 12px rgba(0,0,0,0.3)'}}>
@@ -7610,6 +7877,153 @@ function AdminLoginModal({ onClose, onLogin, callKanbanAPI }) {
           <button onClick={doLogin} disabled={loading} style={{flex:1,padding:'10px',background:loading?'rgba(16,185,129,0.3)':'linear-gradient(135deg,#10b981,#22c55e)',border:'none',borderRadius:8,color:'#fff',fontSize:12,fontWeight:700,cursor:'pointer',boxShadow:loading?'none':'0 4px 12px rgba(16,185,129,0.3)',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
             {loading ? <><span style={{display:'inline-block',width:12,height:12,border:'2px solid #fff',borderTopColor:'transparent',borderRadius:'50%',animation:'spin 0.8s linear infinite'}}></span>Entrando...</> : <>🔓 Entrar</>}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// MODAL GERENCIAR TAGS (admin)
+// ============================================================
+function GerenciarTagsModal({ onClose, onReload, showToast }) {
+  const [tags, setTags] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [novaNome, setNovaNome] = useState('');
+  const [novaCor, setNovaCor] = useState('#6366f1');
+  const [salvando, setSalvando] = useState(false);
+  
+  const KANBAN_API = 'https://script.google.com/macros/s/AKfycbyqtgNDt03Z2cfTlbDAUObosynmHaFvXTW4h76X-p3H55_ZFnkKwqKEi6gwFLI9Er4y/exec';
+  const call = async (action, payload = {}) => {
+    try {
+      const url = KANBAN_API + '?action=' + encodeURIComponent(action) + 
+                  '&payload=' + encodeURIComponent(JSON.stringify(payload)) + '&t=' + Date.now();
+      const res = await fetch(url);
+      return await res.json();
+    } catch (e) { return { ok: false, error: e.message }; }
+  };
+  
+  // Nota: a API atual não tem endpoints de CRUD de tags. Vamos editar via Apps Script direto (instrução ao usuário).
+  // Por ora, lista as tags disponíveis e permite visualização. Edição completa ficará pra próxima versão da API.
+  
+  useEffect(() => {
+    call('getTags').then(res => {
+      if (res.ok) setTags(res.tags);
+      setLoading(false);
+    });
+  }, []);
+  
+  return (
+    <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',backdropFilter:'blur(6px)',zIndex:1400,display:'flex',alignItems:'center',justifyContent:'center',padding:20,animation:'fadeIn .2s'}}>
+      <div onClick={e => e.stopPropagation()} style={{width:'100%',maxWidth:540,maxHeight:'85vh',overflowY:'auto',background:'rgba(13,21,38,0.95)',backdropFilter:'blur(20px) saturate(180%)',border:'1px solid rgba(168,85,247,0.3)',borderRadius:16,boxShadow:'0 20px 60px rgba(0,0,0,0.5)',animation:'scaleIn .25s'}}>
+        <div style={{padding:'18px 22px',borderBottom:'1px solid rgba(168,85,247,0.15)',background:'linear-gradient(135deg,rgba(168,85,247,0.1),rgba(99,102,241,0.05))'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10}}>
+            <div>
+              <div style={{fontSize:16,fontWeight:800,color:'#e2e8f0'}}>🏷 Gerenciar Tags</div>
+              <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>{tags.length} tags ativas</div>
+            </div>
+            <button onClick={onClose} style={{width:32,height:32,borderRadius:8,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#94a3b8',fontSize:16,fontWeight:700,cursor:'pointer'}}>✕</button>
+          </div>
+        </div>
+        
+        <div style={{padding:22}}>
+          {loading ? (
+            <div style={{padding:30,textAlign:'center',color:'#64748b',fontSize:12}}>Carregando...</div>
+          ) : (
+            <>
+              <div style={{fontSize:11,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,marginBottom:10}}>Tags em uso ({tags.length})</div>
+              <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:20}}>
+                {tags.map(t => (
+                  <div key={t.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.05)',borderRadius:10}}>
+                    <div style={{width:20,height:20,borderRadius:5,background:t.cor,boxShadow:`0 0 8px ${t.cor}66`,flexShrink:0}}></div>
+                    <div style={{flex:1,fontSize:13,color:'#e2e8f0',fontWeight:600}}>{t.nome}</div>
+                    <div style={{fontSize:10,color:'#64748b',fontFamily:'monospace'}}>{t.cor}</div>
+                  </div>
+                ))}
+              </div>
+              
+              <div style={{padding:16,background:'rgba(99,102,241,0.05)',border:'1px solid rgba(99,102,241,0.15)',borderRadius:10}}>
+                <div style={{fontSize:12,fontWeight:700,color:'#c4b5fd',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+                  💡 Para adicionar/editar tags
+                </div>
+                <div style={{fontSize:11,color:'#94a3b8',lineHeight:1.6}}>
+                  1. Abra sua planilha <strong style={{color:'#e2e8f0'}}>CRM_Kanban</strong> no Google Sheets<br/>
+                  2. Vá na aba <strong style={{color:'#e2e8f0'}}>Tags</strong><br/>
+                  3. Adicione nova linha: <code style={{background:'rgba(0,0,0,0.3)',padding:'1px 5px',borderRadius:3,fontSize:10}}>TAG_12</code> • nome • cor (ex: <code style={{background:'rgba(0,0,0,0.3)',padding:'1px 5px',borderRadius:3,fontSize:10}}>#22c55e</code>) • <code style={{background:'rgba(0,0,0,0.3)',padding:'1px 5px',borderRadius:3,fontSize:10}}>sim</code><br/>
+                  4. Para desativar: mude <code style={{background:'rgba(0,0,0,0.3)',padding:'1px 5px',borderRadius:3,fontSize:10}}>sim</code> → <code style={{background:'rgba(0,0,0,0.3)',padding:'1px 5px',borderRadius:3,fontSize:10}}>nao</code>
+                </div>
+                <button onClick={() => { window.open('https://sheets.google.com', '_blank'); }} style={{marginTop:10,padding:'7px 14px',background:'linear-gradient(135deg,#6366f1,#a855f7)',border:'none',borderRadius:8,color:'#fff',fontSize:11,fontWeight:700,cursor:'pointer',boxShadow:'0 2px 8px rgba(99,102,241,0.3)'}}>🔗 Abrir Google Sheets</button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// MODAL GERENCIAR VENDEDORES (admin)
+// ============================================================
+function GerenciarVendedoresModal({ onClose, showToast }) {
+  const [usuarios, setUsuarios] = useState([]);
+  const [loading, setLoading] = useState(true);
+  
+  const KANBAN_API = 'https://script.google.com/macros/s/AKfycbyqtgNDt03Z2cfTlbDAUObosynmHaFvXTW4h76X-p3H55_ZFnkKwqKEi6gwFLI9Er4y/exec';
+  
+  useEffect(() => {
+    fetch(KANBAN_API + '?action=getUsuarios&t=' + Date.now())
+      .then(r => r.json())
+      .then(res => {
+        if (res.ok) setUsuarios(res.usuarios);
+        setLoading(false);
+      });
+  }, []);
+  
+  return (
+    <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',backdropFilter:'blur(6px)',zIndex:1400,display:'flex',alignItems:'center',justifyContent:'center',padding:20,animation:'fadeIn .2s'}}>
+      <div onClick={e => e.stopPropagation()} style={{width:'100%',maxWidth:540,maxHeight:'85vh',overflowY:'auto',background:'rgba(13,21,38,0.95)',backdropFilter:'blur(20px) saturate(180%)',border:'1px solid rgba(34,197,94,0.3)',borderRadius:16,boxShadow:'0 20px 60px rgba(0,0,0,0.5)',animation:'scaleIn .25s'}}>
+        <div style={{padding:'18px 22px',borderBottom:'1px solid rgba(34,197,94,0.15)',background:'linear-gradient(135deg,rgba(34,197,94,0.08),rgba(16,185,129,0.05))'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10}}>
+            <div>
+              <div style={{fontSize:16,fontWeight:800,color:'#e2e8f0'}}>👥 Gerenciar Vendedores</div>
+              <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>{usuarios.length} usuários ativos</div>
+            </div>
+            <button onClick={onClose} style={{width:32,height:32,borderRadius:8,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#94a3b8',fontSize:16,fontWeight:700,cursor:'pointer'}}>✕</button>
+          </div>
+        </div>
+        
+        <div style={{padding:22}}>
+          {loading ? (
+            <div style={{padding:30,textAlign:'center',color:'#64748b',fontSize:12}}>Carregando...</div>
+          ) : (
+            <>
+              <div style={{fontSize:11,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,marginBottom:10}}>Usuários cadastrados</div>
+              <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:20}}>
+                {usuarios.map(u => (
+                  <div key={u.nome} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.05)',borderRadius:10}}>
+                    <span style={{fontSize:16}}>{u.tipo === 'admin' ? '👑' : '👤'}</span>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:13,color:'#e2e8f0',fontWeight:700}}>{u.nome}</div>
+                      <div style={{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1}}>{u.tipo}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              
+              <div style={{padding:16,background:'rgba(34,197,94,0.05)',border:'1px solid rgba(34,197,94,0.15)',borderRadius:10}}>
+                <div style={{fontSize:12,fontWeight:700,color:'#86efac',marginBottom:8}}>💡 Para gerenciar usuários e senhas</div>
+                <div style={{fontSize:11,color:'#94a3b8',lineHeight:1.6}}>
+                  1. Abra sua planilha <strong style={{color:'#e2e8f0'}}>CRM_Kanban</strong><br/>
+                  2. Vá na aba <strong style={{color:'#e2e8f0'}}>Usuarios</strong><br/>
+                  3. Para <strong style={{color:'#e2e8f0'}}>trocar senha</strong>: edite a coluna "senha"<br/>
+                  4. Para <strong style={{color:'#e2e8f0'}}>desativar</strong>: mude "sim" → "nao" na coluna "ativo"<br/>
+                  5. Para <strong style={{color:'#e2e8f0'}}>adicionar novo</strong>: nova linha com nome, senha, tipo (vendedor/admin), ativo
+                </div>
+                <button onClick={() => { window.open('https://sheets.google.com', '_blank'); }} style={{marginTop:10,padding:'7px 14px',background:'linear-gradient(135deg,#16a34a,#22c55e)',border:'none',borderRadius:8,color:'#fff',fontSize:11,fontWeight:700,cursor:'pointer',boxShadow:'0 2px 8px rgba(34,197,94,0.3)'}}>🔗 Abrir Google Sheets</button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>
