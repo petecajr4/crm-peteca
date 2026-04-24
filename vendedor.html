@@ -344,15 +344,21 @@ function KanbanField({ kanbans, onSelectKanban }) {
     kanbans.forEach(k => {
       if (!particlesRef.current[k.id]) {
         const isPerdido = k.status === 'perdido';
+        // Velocidade inicial mais energética
+        const angle = Math.random() * Math.PI * 2;
+        const speed = isPerdido ? 1.2 : 2.5;
         particlesRef.current[k.id] = {
           x: 100 + Math.random() * Math.max(100, dimensions.w - 200),
-          y: isPerdido ? dimensions.h * 0.75 + Math.random() * (dimensions.h * 0.2) : 80 + Math.random() * Math.max(100, dimensions.h * 0.6),
-          vx: (Math.random() - 0.5) * 0.5,
-          vy: (Math.random() - 0.5) * 0.5,
-          r: calcSize(k.potencial_perdido) / 2
+          y: isPerdido ? dimensions.h * 0.78 + Math.random() * (dimensions.h * 0.15) : 80 + Math.random() * Math.max(100, dimensions.h * 0.55),
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          r: calcSize(k.potencial_perdido) / 2,
+          // Massa proporcional à área (bolinhas maiores empurram mais)
+          m: Math.pow(calcSize(k.potencial_perdido) / 2, 2)
         };
       } else {
         particlesRef.current[k.id].r = calcSize(k.potencial_perdido) / 2;
+        particlesRef.current[k.id].m = Math.pow(calcSize(k.potencial_perdido) / 2, 2);
       }
     });
   }, [kanbans, dimensions]);
@@ -377,32 +383,57 @@ function KanbanField({ kanbans, onSelectKanban }) {
         const kanban = kanbansMap[id];
         const isPerdido = kanban?.status === 'perdido';
         
+        // Movimento
         p.x += p.vx;
         p.y += p.vy;
         
-        const drag = isPerdido ? 0.97 : 0.985;
+        // Amortecimento MUITO LEVE (quase nada) — mantém velocidade como bilhar
+        const drag = isPerdido ? 0.995 : 0.998;
         p.vx *= drag;
         p.vy *= drag;
         
-        if (Math.random() < 0.03) {
-          const force = isPerdido ? 0.15 : 0.25;
+        // Empurrãozinho constante pra manter em movimento
+        if (Math.random() < 0.08) {
+          const force = isPerdido ? 0.35 : 0.6;
           p.vx += (Math.random() - 0.5) * force;
           p.vy += (Math.random() - 0.5) * force;
         }
         
-        if (isPerdido && p.y < perdidosLimite) p.vy += 0.08;
-        if (!isPerdido && p.y > perdidosLimite - 20) p.vy -= 0.1;
+        // Atração suave pra zona do status
+        if (isPerdido && p.y < perdidosLimite) p.vy += 0.12;
+        if (!isPerdido && p.y > perdidosLimite - 20) p.vy -= 0.15;
         
-        const maxV = isPerdido ? 1.2 : 2;
-        const v = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
-        if (v > maxV) { p.vx = (p.vx / v) * maxV; p.vy = (p.vy / v) * maxV; }
+        // Velocidade MÍNIMA (pra nunca parar de verdade)
+        const vAtual = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
+        const vMin = isPerdido ? 0.4 : 0.8;
+        if (vAtual < vMin) {
+          if (vAtual > 0.01) {
+            const boost = vMin / vAtual;
+            p.vx *= boost;
+            p.vy *= boost;
+          } else {
+            // Praticamente parada → dar empurrão aleatório forte
+            const ang = Math.random() * Math.PI * 2;
+            p.vx = Math.cos(ang) * vMin;
+            p.vy = Math.sin(ang) * vMin;
+          }
+        }
         
-        if (p.x - p.r < 10) { p.x = p.r + 10; p.vx *= -0.6; }
-        if (p.x + p.r > w - 10) { p.x = w - p.r - 10; p.vx *= -0.6; }
-        if (p.y - p.r < 10) { p.y = p.r + 10; p.vy *= -0.6; }
-        if (p.y + p.r > h - 10) { p.y = h - p.r - 10; p.vy *= -0.6; }
+        // Velocidade MÁXIMA (pra não virar foguete)
+        const maxV = isPerdido ? 2.8 : 4.5;
+        if (vAtual > maxV) {
+          p.vx = (p.vx / vAtual) * maxV;
+          p.vy = (p.vy / vAtual) * maxV;
+        }
+        
+        // Colisão com bordas — REBATIMENTO QUASE ELÁSTICO (mantém energia)
+        if (p.x - p.r < 10) { p.x = p.r + 10; p.vx = Math.abs(p.vx) * 0.95; }
+        if (p.x + p.r > w - 10) { p.x = w - p.r - 10; p.vx = -Math.abs(p.vx) * 0.95; }
+        if (p.y - p.r < 10) { p.y = p.r + 10; p.vy = Math.abs(p.vy) * 0.95; }
+        if (p.y + p.r > h - 10) { p.y = h - p.r - 10; p.vy = -Math.abs(p.vy) * 0.95; }
       });
       
+      // Colisão entre bolinhas — ELÁSTICA 2D com massa (física real de bilhar)
       for (let i = 0; i < ids.length; i++) {
         for (let j = i+1; j < ids.length; j++) {
           const a = parts[ids[i]];
@@ -412,18 +443,37 @@ function KanbanField({ kanbans, onSelectKanban }) {
           const dy = b.y - a.y;
           const dist = Math.sqrt(dx*dx + dy*dy);
           const minDist = a.r + b.r + 2;
-          if (dist < minDist && dist > 0) {
+          if (dist < minDist && dist > 0.01) {
+            // Separação (resolução de overlap)
             const overlap = minDist - dist;
             const nx = dx / dist;
             const ny = dy / dist;
-            const push = overlap * 0.5;
-            a.x -= nx * push; a.y -= ny * push;
-            b.x += nx * push; b.y += ny * push;
-            const va = a.vx * nx + a.vy * ny;
-            const vb = b.vx * nx + b.vy * ny;
-            const diff = (vb - va) * 0.4;
-            a.vx += nx * diff; a.vy += ny * diff;
-            b.vx -= nx * diff; b.vy -= ny * diff;
+            // Separação proporcional à massa (bolinhas pequenas empurradas mais)
+            const totalMass = a.m + b.m;
+            a.x -= nx * overlap * (b.m / totalMass);
+            a.y -= ny * overlap * (b.m / totalMass);
+            b.x += nx * overlap * (a.m / totalMass);
+            b.y += ny * overlap * (a.m / totalMass);
+            
+            // Colisão elástica 2D (conservação de momento)
+            // Velocidades ao longo da normal
+            const van = a.vx * nx + a.vy * ny;
+            const vbn = b.vx * nx + b.vy * ny;
+            
+            // Só processa se estão se aproximando (van > vbn significa afastando)
+            if (van - vbn > 0) {
+              // Fórmula de colisão elástica com massa
+              // Coeficiente de restituição 0.95 (quase perfeito = bilhar)
+              const e = 0.95;
+              const vanNew = (van * (a.m - b.m) + 2 * b.m * vbn) / totalMass;
+              const vbnNew = (vbn * (b.m - a.m) + 2 * a.m * van) / totalMass;
+              
+              // Aplicar só a componente normal (tangencial é preservada)
+              a.vx += (vanNew - van) * nx * e;
+              a.vy += (vanNew - van) * ny * e;
+              b.vx += (vbnNew - vbn) * nx * e;
+              b.vy += (vbnNew - vbn) * ny * e;
+            }
           }
         }
       }
@@ -440,7 +490,18 @@ function KanbanField({ kanbans, onSelectKanban }) {
     const rect = containerRef.current.getBoundingClientRect();
     const p = particlesRef.current[id];
     if (!p) return;
-    draggingRef.current = { id, offsetX: e.clientX - rect.left - p.x, offsetY: e.clientY - rect.top - p.y, moved: false, startX: e.clientX, startY: e.clientY };
+    draggingRef.current = { 
+      id, 
+      offsetX: e.clientX - rect.left - p.x, 
+      offsetY: e.clientY - rect.top - p.y, 
+      moved: false, 
+      startX: e.clientX, 
+      startY: e.clientY,
+      lastX: p.x,
+      lastY: p.y,
+      velX: 0,
+      velY: 0
+    };
   };
   const onMouseMove = (e) => {
     const d = draggingRef.current;
@@ -448,14 +509,30 @@ function KanbanField({ kanbans, onSelectKanban }) {
     const rect = containerRef.current.getBoundingClientRect();
     const p = particlesRef.current[d.id];
     if (!p) return;
-    p.x = e.clientX - rect.left - d.offsetX;
-    p.y = e.clientY - rect.top - d.offsetY;
+    const newX = e.clientX - rect.left - d.offsetX;
+    const newY = e.clientY - rect.top - d.offsetY;
+    // Calcular velocidade do movimento pra usar quando soltar
+    d.velX = newX - d.lastX;
+    d.velY = newY - d.lastY;
+    d.lastX = newX;
+    d.lastY = newY;
+    p.x = newX;
+    p.y = newY;
     p.vx = 0; p.vy = 0;
     if (Math.abs(e.clientX - d.startX) + Math.abs(e.clientY - d.startY) > 5) d.moved = true;
   };
   const onMouseUp = (id) => {
     const d = draggingRef.current;
-    if (d && !d.moved && d.id === id) onSelectKanban(id);
+    if (d && !d.moved && d.id === id) {
+      onSelectKanban(id);
+    } else if (d && d.moved && d.id === id) {
+      // TACADA: aplicar velocidade do movimento ao soltar
+      const p = particlesRef.current[id];
+      if (p) {
+        p.vx = d.velX * 1.2;
+        p.vy = d.velY * 1.2;
+      }
+    }
     draggingRef.current = null;
   };
   const onTouchStart = (e, id) => {
@@ -463,7 +540,18 @@ function KanbanField({ kanbans, onSelectKanban }) {
     const rect = containerRef.current.getBoundingClientRect();
     const p = particlesRef.current[id];
     if (!p) return;
-    draggingRef.current = { id, offsetX: t.clientX - rect.left - p.x, offsetY: t.clientY - rect.top - p.y, moved: false, startX: t.clientX, startY: t.clientY };
+    draggingRef.current = { 
+      id, 
+      offsetX: t.clientX - rect.left - p.x, 
+      offsetY: t.clientY - rect.top - p.y, 
+      moved: false, 
+      startX: t.clientX, 
+      startY: t.clientY,
+      lastX: p.x,
+      lastY: p.y,
+      velX: 0,
+      velY: 0
+    };
   };
   const onTouchMove = (e) => {
     const d = draggingRef.current;
@@ -473,14 +561,28 @@ function KanbanField({ kanbans, onSelectKanban }) {
     const rect = containerRef.current.getBoundingClientRect();
     const p = particlesRef.current[d.id];
     if (!p) return;
-    p.x = t.clientX - rect.left - d.offsetX;
-    p.y = t.clientY - rect.top - d.offsetY;
+    const newX = t.clientX - rect.left - d.offsetX;
+    const newY = t.clientY - rect.top - d.offsetY;
+    d.velX = newX - d.lastX;
+    d.velY = newY - d.lastY;
+    d.lastX = newX;
+    d.lastY = newY;
+    p.x = newX;
+    p.y = newY;
     p.vx = 0; p.vy = 0;
     if (Math.abs(t.clientX - d.startX) + Math.abs(t.clientY - d.startY) > 8) d.moved = true;
   };
   const onTouchEnd = (id) => {
     const d = draggingRef.current;
-    if (d && !d.moved && d.id === id) onSelectKanban(id);
+    if (d && !d.moved && d.id === id) {
+      onSelectKanban(id);
+    } else if (d && d.moved && d.id === id) {
+      const p = particlesRef.current[id];
+      if (p) {
+        p.vx = d.velX * 1.2;
+        p.vy = d.velY * 1.2;
+      }
+    }
     draggingRef.current = null;
   };
   
