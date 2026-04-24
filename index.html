@@ -997,36 +997,6 @@ function CRMPeteca() {
     loadVendas();
     loadAnotacoes();
     loadMetas();
-    // Sync TicketFlow recontatos em background
-    syncRecontatosFromTicketFlow().then(n => {
-      if (n > 0) showToast(`🔄 ${n} atualizações do TicketFlow sincronizadas`);
-    });
-  }, []);
-
-  // v3: Auto-sync TicketFlow a cada 2 minutos (silencioso)
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      if (document.hidden) return; // não sincroniza se a aba estiver em background
-      const n = await syncRecontatosFromTicketFlow(true);
-      if (n > 0) showToast(`🔄 ${n} ${n === 1 ? 'novo comentário' : 'novos comentários'} do TicketFlow`);
-    }, 120000); // 2 minutos
-    return () => clearInterval(interval);
-  }, []);
-
-  // v3: Sync imediato ao voltar para a aba (visibilitychange)
-  useEffect(() => {
-    const onVisibilityChange = async () => {
-      if (!document.hidden) {
-        // Só sincroniza se faz mais de 30s do último sync
-        const agora = Date.now();
-        if (agora - lastSyncSilentRef.current < 30000) return;
-        lastSyncSilentRef.current = agora;
-        const n = await syncRecontatosFromTicketFlow(true);
-        if (n > 0) showToast(`🔄 ${n} ${n === 1 ? 'nova atualização' : 'novas atualizações'} enquanto você estava fora`);
-      }
-    };
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
   }, []);
 
   // v2: Keyboard shortcuts globais (Cmd+K, 1-9 tabs, ESC)
@@ -1816,57 +1786,6 @@ function CRMPeteca() {
               }}>{inativosIds.size}</span>
             </button>
           )}
-          {/* INDICADOR DE SYNC TICKETFLOW */}
-          {(() => {
-            const now = Date.now();
-            const secsAgo = lastSyncAt ? Math.floor((now - lastSyncAt) / 1000) : null;
-            const minsAgo = secsAgo ? Math.floor(secsAgo / 60) : null;
-            const timeLabel = !lastSyncAt ? "—"
-              : secsAgo < 60 ? `${secsAgo}s`
-              : minsAgo < 60 ? `${minsAgo}m`
-              : `${Math.floor(minsAgo/60)}h`;
-            const dotColor = syncStatus === "syncing" ? "#eab308"
-              : syncStatus === "error" ? "#ef4444"
-              : syncStatus === "ok" ? "#22c55e" : "#6b7280";
-            const dotAnim = syncStatus === "syncing" ? "pulse 1s infinite" : "none";
-            const tooltip = syncStatus === "syncing" ? "Sincronizando com TicketFlow..."
-              : syncStatus === "error" ? "Falha ao sincronizar (clique para retry)"
-              : syncStatus === "ok" ? `Sincronizado há ${timeLabel} • Clique para atualizar agora`
-              : "Clique para sincronizar";
-            return (
-              <button onClick={async () => {
-                const n = await syncRecontatosFromTicketFlow();
-                showToast(n > 0 ? `🔄 ${n} ${n === 1 ? 'atualização' : 'atualizações'}` : "✅ Tudo sincronizado");
-              }} disabled={syncStatus === "syncing"}
-                title={tooltip}
-                style={{
-                  width:"100%",
-                  background: syncStatus === "error" ? "rgba(239,68,68,0.08)" : "rgba(255,255,255,0.02)",
-                  border:"1px solid " + (syncStatus === "error" ? "rgba(239,68,68,0.25)" : "rgba(255,255,255,0.06)"),
-                  borderRadius:9,
-                  padding: sidebarCollapsed ? "8px 0" : "8px 12px",
-                  color:"#94a3b8",fontSize:11,cursor: syncStatus === "syncing" ? "default" : "pointer",fontWeight:500,
-                  display:"flex",alignItems:"center",
-                  justifyContent: sidebarCollapsed ? "center" : "space-between",
-                  gap:8
-                }}>
-                <div style={{display:"flex",alignItems:"center",gap:8}}>
-                  <span style={{
-                    width:8,height:8,borderRadius:"50%",background:dotColor,
-                    boxShadow:`0 0 8px ${dotColor}`,animation:dotAnim,flexShrink:0
-                  }}/>
-                  {!sidebarCollapsed && (
-                    <span style={{fontSize:10}}>
-                      {syncStatus === "syncing" ? "Sincronizando..."
-                        : syncStatus === "error" ? "Erro sync"
-                        : lastSyncAt ? `TicketFlow · ${timeLabel}` : "Não sincronizado"}
-                    </span>
-                  )}
-                </div>
-                {!sidebarCollapsed && <span style={{fontSize:11,opacity:0.6}}>🔄</span>}
-              </button>
-            );
-          })()}
           {backupDays >= 7 && !sidebarCollapsed && (
             <div style={{
               background:"linear-gradient(135deg,rgba(220,38,38,0.15),rgba(239,68,68,0.1))",
@@ -4748,13 +4667,6 @@ function CRMPeteca() {
                   <div style={{textAlign:"right"}}>
                     <div style={{fontSize:11,color:"#8899bb"}}>POTENCIAL PERDIDO (Risco + Abandono)</div>
                     <div style={{fontSize:22,fontWeight:700,color:"#ef4444"}}>R$ {totalPotencialPerdido.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
-                    <button onClick={async () => {
-                      const n = await syncRecontatosFromTicketFlow();
-                      showToast(n > 0 ? `🔄 ${n} atualizações sincronizadas do TicketFlow` : "✅ Tudo sincronizado — sem novidades");
-                    }} disabled={ticketflowSyncing} style={{
-                      marginTop:8,padding:"6px 14px",background:"rgba(37,99,235,0.15)",border:"1px solid #2563eb",
-                      borderRadius:6,color:"#60a5fa",fontSize:10,fontWeight:600,cursor: ticketflowSyncing ? "default" : "pointer"
-                    }}>{ticketflowSyncing ? "⏳ Sincronizando..." : "🔄 Sync TicketFlow"}</button>
                     <div style={{marginTop:8,display:"flex",gap:6,justifyContent:"flex-end"}}>
                       <button onClick={() => {
                         const rows = clientesArr.map((c,i) => `<tr><td>${i+1}</td><td>${c.nome}${c.isIde?' 🔗':''}</td><td>${c.cidade}</td><td>${c.vendedorPrincipal}</td><td>${c.vendas}</td><td>R$ ${c.total.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td><td>${c.diasSemCompra}d</td><td>${c.status}</td><td>R$ ${c.potencialPerdido.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td></tr>`).join('');
@@ -5141,28 +5053,6 @@ function CRMPeteca() {
                         })}
                       </div>
                     );})()}
-
-                    {/* AÇÃO: Abrir Recontato no TicketFlow */}
-                    <div style={{background:"linear-gradient(135deg,#0a1a2a,#102040)",border:"1px solid #2a4a7a",borderRadius:8,padding:16,marginBottom:16}}>
-                      <div style={{fontSize:11,color:"#5a7a9a",textTransform:"uppercase",letterSpacing:1,fontWeight:600,marginBottom:10}}>🔄 Recuperação via TicketFlow</div>
-                      <div style={{display:"flex",alignItems:"center",gap:14}}>
-                        <div style={{flex:1}}>
-                          <div style={{fontSize:12,color:"#60a5fa",fontWeight:600,marginBottom:4}}>Abrir Ticket de Recontato</div>
-                          <div style={{fontSize:10,color:"#8899bb",lineHeight:1.4}}>
-                            Cria um ticket no TicketFlow para o vendedor entrar em contato com este cliente. 
-                            As anotações do vendedor serão sincronizadas automaticamente aqui no CRM.
-                          </div>
-                        </div>
-                        <button onClick={() => {
-                          setReContatoModal(abandonoModal);
-                          setReContatoVendedor("");
-                        }} style={{
-                          padding:"10px 18px",background:"linear-gradient(135deg,#2563eb,#1d4ed8)",border:"none",borderRadius:8,
-                          color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap",
-                          boxShadow:"0 4px 12px rgba(37,99,235,0.3)"
-                        }}>📤 Abrir Recontato</button>
-                      </div>
-                    </div>
 
                     {/* KANBAN DE ABANDONO */}
                     <div style={{background:"linear-gradient(135deg,rgba(99,102,241,0.08),rgba(168,85,247,0.05))",border:"1px solid rgba(168,85,247,0.2)",borderRadius:8,padding:16,marginBottom:10}}>
@@ -6845,75 +6735,6 @@ function CRMPeteca() {
       )}
 
       {/* MODAL: Recontato TicketFlow */}
-      {reContatoModal && (
-        <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.7)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:250,padding:20}} onClick={() => setReContatoModal(null)}>
-          <div style={{background:"linear-gradient(135deg,#111c30,#152240)",border:"1px solid #2563eb",borderRadius:16,padding:28,maxWidth:500,width:"100%",animation:"slideUp .3s ease"}} onClick={e => e.stopPropagation()}>
-            <div style={{fontSize:16,fontWeight:700,color:"#e2e8f0",marginBottom:4}}>📤 Abrir Recontato no TicketFlow</div>
-            <div style={{fontSize:11,color:"#5a7a9a",marginBottom:20}}>Ticket será criado automaticamente com os dados do cliente</div>
-            
-            <div style={{background:"#0a1220",borderRadius:8,padding:14,marginBottom:16}}>
-              <div style={{fontSize:13,fontWeight:600,color:"#e2e8f0",marginBottom:4}}>{reContatoModal.nome}</div>
-              <div style={{fontSize:11,color:"#5a7a9a"}}>{reContatoModal.cidade} • {reContatoModal.diasSemCompra >= 9999 ? "Nunca comprou" : reContatoModal.diasSemCompra + " dias sem comprar"} • R$ {(reContatoModal.total||0).toLocaleString('pt-BR',{maximumFractionDigits:0})} histórico</div>
-              {reContatoModal.produtos && Object.keys(reContatoModal.produtos).length > 0 && (
-                <div style={{fontSize:10,color:"#60a5fa",marginTop:6}}>
-                  Top produtos: {Object.entries(reContatoModal.produtos).sort(([,a],[,b]) => b.valor - a.valor).slice(0,3).map(([,p]) => p.desc).join(', ')}
-                </div>
-              )}
-            </div>
-            
-            <div style={{marginBottom:16}}>
-              <label style={{fontSize:10,color:"#5a7a9a",display:"block",marginBottom:6,textTransform:"uppercase",letterSpacing:1}}>Vendedor responsável *</label>
-              <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
-                {VENDEDORES_TICKETFLOW.map(v => (
-                  <button key={v} onClick={() => setReContatoVendedor(v)} style={{
-                    padding:"8px 14px",borderRadius:20,fontSize:12,fontWeight:600,cursor:"pointer",
-                    background: reContatoVendedor === v ? "rgba(37,99,235,0.2)" : "#0a1220",
-                    border: `1px solid ${reContatoVendedor === v ? "#2563eb" : "#1e3050"}`,
-                    color: reContatoVendedor === v ? "#60a5fa" : "#8899bb"
-                  }}>{v}</button>
-                ))}
-              </div>
-            </div>
-            
-            <div style={{display:"flex",gap:10}}>
-              <button onClick={() => setReContatoModal(null)} style={{flex:1,padding:"12px",background:"#1a2744",border:"1px solid #2a3f66",borderRadius:8,color:"#8899bb",fontSize:12,cursor:"pointer"}}>Cancelar</button>
-              <button disabled={!reContatoVendedor || ticketflowSyncing} onClick={async () => {
-                setTicketflowSyncing(true);
-                const result = await criarRecontato(reContatoModal, reContatoVendedor);
-                setTicketflowSyncing(false);
-                if (result.ok) {
-                  // Salvar anotação local de que o recontato foi aberto
-                  const novasAnot = {...anotacoes};
-                  const crmKey = reContatoModal.id;
-                  if (!novasAnot[crmKey]) novasAnot[crmKey] = [];
-                  novasAnot[crmKey].push({
-                    tipo: "ticketflow",
-                    vendedor: "CRM Peteca",
-                    data: new Date().toISOString(),
-                    dataDisplay: new Date().toLocaleDateString('pt-BR'),
-                    obs: `📤 Ticket de Recontato aberto no TicketFlow. Vendedor: ${reContatoVendedor}`,
-                    ticketId: result.id
-                  });
-                  setAnotacoes(novasAnot);
-                  try { await window.storage.set(ANOTACOES_STORAGE, JSON.stringify(novasAnot)); } catch(e) {}
-                  
-                  setReContatoModal(null);
-                  showToast(`✅ Ticket criado no TicketFlow! Vendedor: ${reContatoVendedor}`);
-                } else {
-                  showToast(`❌ Erro ao criar ticket: ${result.error || 'Sem conexão'}`, "error");
-                }
-              }} style={{
-                flex:1,padding:"12px",
-                background: (!reContatoVendedor || ticketflowSyncing) ? "#1a2744" : "linear-gradient(135deg,#2563eb,#1d4ed8)",
-                border:"none",borderRadius:8,
-                color: (!reContatoVendedor || ticketflowSyncing) ? "#4a5a6a" : "#fff",
-                fontSize:12,fontWeight:700,
-                cursor: (!reContatoVendedor || ticketflowSyncing) ? "default" : "pointer"
-              }}>{ticketflowSyncing ? "⏳ Criando..." : "📤 Criar Ticket"}</button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* MODAL: Backup */}
       {showBackupModal && (
@@ -7044,7 +6865,6 @@ function CRMPeteca() {
         ];
         const actionItems = [
           {type:"action",key:"backup",label:"💾 Abrir Backup",fn:()=>{setShowBackupModal(true);}},
-          {type:"action",key:"sync",label:"🔄 Sincronizar TicketFlow",fn:()=>{syncRecontatosFromTicketFlow().then(n=>showToast(n>0?`🔄 ${n} atualizações`:"✅ Tudo sincronizado"));}},
           {type:"action",key:"ide",label:"🔗 Gerenciar IDEs",fn:()=>{setShowIdeManager(true);}},
         ];
         // Clientes filtrados (top 20)
