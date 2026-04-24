@@ -137,6 +137,68 @@ function CRMPeteca() {
   // INTEGRAÇÃO TICKETFLOW
   // ============================================================
   const TICKETFLOW_API = 'https://script.google.com/macros/s/AKfycby3EY-mk4FmQZxi3AYUj_pbUPjzDNonrIZPt4aeGttRJYDhpNKT57qfbziptX8Jc2Q/exec';
+
+  // ============================================================
+  // KANBAN DE ABANDONO (Etapa 4)
+  // ============================================================
+  const KANBAN_API = 'https://script.google.com/macros/s/AKfycbyqtgNDt03Z2cfTlbDAUObosynmHaFvXTW4h76X-p3H55_ZFnkKwqKEi6gwFLI9Er4y/exec';
+  
+  // Admin identificado (login opcional)
+  const [adminUser, setAdminUser] = useState(() => {
+    try { const s = localStorage.getItem('peteca_admin_user'); return s ? JSON.parse(s) : null; } catch(e) { return null; }
+  });
+  useEffect(() => {
+    try {
+      if (adminUser) localStorage.setItem('peteca_admin_user', JSON.stringify(adminUser));
+      else localStorage.removeItem('peteca_admin_user');
+    } catch(e) {}
+  }, [adminUser]);
+  const adminName = adminUser?.nome || 'Admin';
+
+  // Helper para chamar a API do Kanban
+  const callKanbanAPI = async (action, payload = {}) => {
+    try {
+      const url = KANBAN_API + '?action=' + encodeURIComponent(action) + 
+                  '&payload=' + encodeURIComponent(JSON.stringify(payload)) +
+                  '&t=' + Date.now();
+      const res = await fetch(url);
+      return await res.json();
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  };
+
+  // States dos Kanbans (visão admin)
+  const [kanbans, setKanbans] = useState([]);
+  const [kanbanTags, setKanbanTags] = useState([]);
+  const [kanbanLoading, setKanbanLoading] = useState(false);
+  const [kanbanLastSync, setKanbanLastSync] = useState(null);
+  const [enviarKanbanModal, setEnviarKanbanModal] = useState(null); // {cliente, vendedor, obs}
+  const [adminLoginModal, setAdminLoginModal] = useState(false);
+
+  const loadKanbansAdmin = async () => {
+    setKanbanLoading(true);
+    const [resK, resT] = await Promise.all([
+      callKanbanAPI('getAll'),
+      callKanbanAPI('getTags')
+    ]);
+    if (resK.ok) setKanbans(resK.kanbans);
+    if (resT.ok) setKanbanTags(resT.tags);
+    setKanbanLastSync(Date.now());
+    setKanbanLoading(false);
+  };
+
+  // Auto-sync a cada 2 minutos se estiver na aba Kanbans
+  useEffect(() => {
+    if (tab !== 'kanbans') return;
+    loadKanbansAdmin();
+    const interval = setInterval(() => {
+      if (!document.hidden) loadKanbansAdmin();
+    }, 120000);
+    return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
   const [ticketflowSyncing, setTicketflowSyncing] = useState(false);
   const [lastSyncAt, setLastSyncAt] = useState(null);
   const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | ok | error
@@ -783,6 +845,17 @@ function CRMPeteca() {
     } catch(e) {}
     
     setVendas(newVendas);
+    
+    // v3: Auto-finalizar Kanbans de clientes que voltaram a comprar
+    try {
+      const clienteIdsNasVendas = [...new Set(merged.map(v => v.clienteId).filter(Boolean))];
+      if (clienteIdsNasVendas.length > 0) {
+        const resAuto = await callKanbanAPI('autoFinalize', { cliente_ids: clienteIdsNasVendas });
+        if (resAuto.ok && resAuto.finalizados > 0) {
+          setImportLog(prev => [...prev, `🎱 ${resAuto.finalizados} Kanban(s) finalizados automaticamente (clientes voltaram a comprar)`]);
+        }
+      }
+    } catch(e) { console.error("Erro auto-finalizar Kanbans:", e); }
     
     // FASE 4: Criar cadastro parcial para clientes que estão nas vendas mas não existem na base
     const clienteIds = new Set(clientes.map(c => c.i));
@@ -1609,6 +1682,49 @@ function CRMPeteca() {
           </button>
         </div>
 
+        {/* LOGIN ADMIN (opcional) */}
+        <div style={{padding: sidebarCollapsed ? "0 10px 8px" : "0 14px 8px"}}>
+          {adminUser ? (
+            <div style={{
+              display:"flex",alignItems:"center",
+              justifyContent: sidebarCollapsed ? "center" : "space-between",
+              gap:8,
+              padding: sidebarCollapsed ? "8px 0" : "8px 12px",
+              background:"linear-gradient(135deg,rgba(16,185,129,0.08),rgba(34,197,94,0.05))",
+              border:"1px solid rgba(34,197,94,0.25)",
+              borderRadius:10,
+              fontSize:11,color:"#86efac",fontWeight:600
+            }} title={sidebarCollapsed ? adminUser.nome + " (clique pra sair)" : ""}>
+              <div style={{display:"flex",alignItems:"center",gap:6,overflow:"hidden"}}>
+                <span style={{fontSize:12}}>👤</span>
+                {!sidebarCollapsed && <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{adminUser.nome}</span>}
+              </div>
+              {!sidebarCollapsed && (
+                <button onClick={() => { setAdminUser(null); showToast("Desidentificado"); }} title="Sair" style={{
+                  background:"rgba(239,68,68,0.1)",border:"1px solid rgba(239,68,68,0.25)",
+                  borderRadius:6,padding:"2px 7px",color:"#fca5a5",fontSize:10,cursor:"pointer",fontWeight:700
+                }}>⎋</button>
+              )}
+            </div>
+          ) : (
+            <button onClick={() => setAdminLoginModal(true)} title={sidebarCollapsed ? "Identificar-se" : ""} style={{
+              width:"100%",
+              background:"rgba(255,255,255,0.02)",
+              border:"1px dashed rgba(255,255,255,0.15)",
+              borderRadius:10,
+              padding: sidebarCollapsed ? "8px 0" : "8px 12px",
+              color:"#64748b",fontSize:11,cursor:"pointer",fontWeight:500,
+              display:"flex",alignItems:"center",
+              justifyContent: sidebarCollapsed ? "center" : "flex-start",
+              gap:8
+            }} onMouseEnter={e=>{e.currentTarget.style.background="rgba(255,255,255,0.05)";e.currentTarget.style.color="#94a3b8";}}
+               onMouseLeave={e=>{e.currentTarget.style.background="rgba(255,255,255,0.02)";e.currentTarget.style.color="#64748b";}}>
+              <span style={{fontSize:12}}>👤</span>
+              {!sidebarCollapsed && <span>Identificar-se</span>}
+            </button>
+          )}
+        </div>
+
         {/* NAV ITEMS */}
         <nav style={{flex:1,padding:"6px 10px",display:"flex",flexDirection:"column",gap:3,overflowY:"auto"}}>
           {[
@@ -1621,6 +1737,7 @@ function CRMPeteca() {
             {key:"fluxo",label:"Fluxo",icon:"📈"},
             {key:"abandono",label:"Abandono",icon:"🚨"},
             {key:"metas",label:"Metas",icon:"🎯"},
+            {key:"kanbans",label:"Kanbans",icon:"🎱"},
           ].map((t,i) => {
             const isActive = tab === t.key;
             return (
@@ -5032,6 +5149,29 @@ function CRMPeteca() {
                       </div>
                     </div>
 
+                    {/* KANBAN DE ABANDONO */}
+                    <div style={{background:"linear-gradient(135deg,rgba(99,102,241,0.08),rgba(168,85,247,0.05))",border:"1px solid rgba(168,85,247,0.2)",borderRadius:8,padding:16,marginBottom:10}}>
+                      <div style={{fontSize:11,color:"#c4b5fd",textTransform:"uppercase",letterSpacing:1,fontWeight:600,marginBottom:10,display:"flex",alignItems:"center",gap:8}}>
+                        <span>🎱</span>
+                        <span>Kanban de Abandono</span>
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:14}}>
+                        <div style={{flex:1}}>
+                          <div style={{fontSize:12,color:"#c4b5fd",fontWeight:600,marginBottom:4}}>Enviar cliente ao Kanban do vendedor</div>
+                          <div style={{fontSize:10,color:"#8899bb",lineHeight:1.4}}>
+                            Cria uma bolinha no Kanban de recuperação do vendedor escolhido. Ele verá esse cliente no portal dele e poderá atualizar o status (aberto → em contato → retorno → perdido). Finalização só admin.
+                          </div>
+                        </div>
+                        <button onClick={() => {
+                          setEnviarKanbanModal({ cliente: abandonoModal });
+                        }} style={{
+                          padding:"10px 18px",background:"linear-gradient(135deg,#6366f1,#a855f7)",border:"none",borderRadius:8,
+                          color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap",
+                          boxShadow:"0 4px 12px rgba(99,102,241,0.3)"
+                        }}>🎱 Enviar ao Kanban</button>
+                      </div>
+                    </div>
+
                     {/* ZONA DE PERIGO: Ocultar cliente */}
                     <div style={{background:"linear-gradient(135deg,#1a0a0a,#2a1010)",border:"1px solid #5c2020",borderRadius:8,padding:16}}>
                       <div style={{fontSize:11,color:"#5a7a9a",textTransform:"uppercase",letterSpacing:1,fontWeight:600,marginBottom:10}}>Zona de perigo</div>
@@ -5423,8 +5563,152 @@ function CRMPeteca() {
           );
         })()}
 
-        {/* CLIENTES TAB */}
-        {tab === "clientes" && (
+        {/* KANBANS TAB (ADMIN) */}
+        {tab === "kanbans" && (() => {
+          // Stats
+          const ativos = kanbans.filter(k => String(k.finalizado).toLowerCase() !== 'sim');
+          const statsGeral = { total: ativos.length, aberto:0, contato:0, retorno:0, perdido:0 };
+          ativos.forEach(k => { if (statsGeral[k.status] !== undefined) statsGeral[k.status]++; });
+          
+          // Por vendedor
+          const porVendedor = {};
+          ativos.forEach(k => {
+            const v = k.vendedor || '—';
+            if (!porVendedor[v]) porVendedor[v] = { nome: v, total: 0, aberto: 0, contato: 0, retorno: 0, perdido: 0, potencial: 0 };
+            porVendedor[v].total++;
+            if (porVendedor[v][k.status] !== undefined) porVendedor[v][k.status]++;
+            porVendedor[v].potencial += Number(k.potencial_perdido || 0);
+          });
+          const vendedoresOrdenados = Object.values(porVendedor).sort((a,b) => b.total - a.total);
+          
+          const STATUS_CORES = {
+            aberto:  { cor: '#60a5fa', label: 'Aberto',           emoji: '🔵' },
+            contato: { cor: '#4ade80', label: 'Em contato',       emoji: '🟢' },
+            retorno: { cor: '#fb923c', label: 'Retorno provável', emoji: '🟠' },
+            perdido: { cor: '#6b7280', label: 'Perdido',          emoji: '⚫' }
+          };
+          
+          return (
+            <div style={{animation:"fadeIn .4s ease"}}>
+              {/* Header da aba */}
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20,flexWrap:"wrap",gap:12}}>
+                <div>
+                  <div style={{fontSize:22,fontWeight:800,letterSpacing:-0.5,display:"flex",alignItems:"center",gap:10}}>
+                    <span>🎱</span>
+                    <span className="gradient-text">Kanbans de Abandono</span>
+                  </div>
+                  <div style={{fontSize:12,color:"#64748b",marginTop:4}}>
+                    Visão completa de todos os vendedores • {statsGeral.total} ativos
+                    {kanbanLastSync && <span> • Sync {Math.floor((Date.now() - kanbanLastSync) / 60000)}min atrás</span>}
+                  </div>
+                </div>
+                <button onClick={loadKanbansAdmin} disabled={kanbanLoading} style={{padding:"9px 16px",background:"rgba(99,102,241,0.1)",border:"1px solid rgba(99,102,241,0.25)",borderRadius:10,color:"#c4b5fd",fontSize:12,fontWeight:600,display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{display:"inline-block",animation:kanbanLoading?"spin 1s linear infinite":"none"}}>🔄</span>
+                  Atualizar
+                </button>
+              </div>
+              
+              {kanbanLoading && kanbans.length === 0 ? (
+                <div style={{padding:60,textAlign:"center"}}>
+                  <div style={{display:"inline-flex",flexDirection:"column",alignItems:"center",gap:12}}>
+                    <div style={{width:36,height:36,border:"3px solid rgba(99,102,241,0.2)",borderTopColor:"#6366f1",borderRadius:"50%",animation:"spin 1s linear infinite"}}></div>
+                    <div style={{fontSize:13,color:"#64748b"}}>Carregando Kanbans...</div>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* KPIs Gerais */}
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:12,marginBottom:20}}>
+                    {[
+                      {label:"Total Ativos", valor: statsGeral.total, cor: "#a78bfa"},
+                      ...Object.entries(STATUS_CORES).map(([key, s]) => ({
+                        label: s.emoji + ' ' + s.label, valor: statsGeral[key] || 0, cor: s.cor
+                      }))
+                    ].map((kpi, i) => (
+                      <div key={i} className="card-hover" style={{background:"rgba(20,28,48,0.6)",backdropFilter:"blur(20px)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:12,padding:"14px 16px"}}>
+                        <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:1,fontWeight:600,marginBottom:6}}>{kpi.label}</div>
+                        <div style={{fontSize:22,fontWeight:800,color:kpi.cor,letterSpacing:-0.5}}>{kpi.valor}</div>
+                      </div>
+                    ))}
+                  </div>
+                  
+                  {/* Lista por vendedor */}
+                  {vendedoresOrdenados.length === 0 ? (
+                    <div style={{padding:60,textAlign:"center",background:"rgba(20,28,48,0.4)",border:"1px solid rgba(255,255,255,0.05)",borderRadius:16}}>
+                      <div style={{fontSize:48,marginBottom:14}}>🎯</div>
+                      <div style={{fontSize:15,fontWeight:700,marginBottom:6}}>Nenhum Kanban criado ainda</div>
+                      <div style={{fontSize:12,color:"#64748b"}}>Vá até a aba Abandono, clique em um cliente e use "🎱 Enviar ao Kanban"</div>
+                    </div>
+                  ) : (
+                    <div style={{display:"flex",flexDirection:"column",gap:14}}>
+                      {vendedoresOrdenados.map(v => (
+                        <div key={v.nome} className="card-hover" style={{background:"rgba(20,28,48,0.6)",backdropFilter:"blur(20px)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:14,overflow:"hidden"}}>
+                          {/* Header vendedor */}
+                          <div style={{padding:"14px 18px",background:"linear-gradient(135deg,rgba(99,102,241,0.08),rgba(168,85,247,0.05))",borderBottom:"1px solid rgba(255,255,255,0.05)",display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10}}>
+                            <div>
+                              <div style={{fontSize:15,fontWeight:800,letterSpacing:-0.3}}>👤 {v.nome}</div>
+                              <div style={{fontSize:11,color:"#94a3b8",marginTop:2}}>
+                                {v.total} clientes • R$ {v.potencial.toLocaleString('pt-BR',{minimumFractionDigits:2})} em jogo
+                              </div>
+                            </div>
+                            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                              {Object.entries(STATUS_CORES).map(([key, s]) => v[key] > 0 && (
+                                <div key={key} style={{
+                                  padding:"4px 10px",borderRadius:16,fontSize:11,fontWeight:700,
+                                  background:`${s.cor}20`,color:s.cor,border:`1px solid ${s.cor}50`,
+                                  display:"flex",alignItems:"center",gap:4
+                                }}>
+                                  <span>{s.emoji}</span>
+                                  <span>{v[key]}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          {/* Lista de kanbans do vendedor */}
+                          <div style={{padding:"10px 12px"}}>
+                            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:8}}>
+                              {ativos.filter(k => k.vendedor === v.nome).map(k => {
+                                const s = STATUS_CORES[k.status] || STATUS_CORES.aberto;
+                                return (
+                                  <div key={k.id} style={{
+                                    padding:"10px 12px",
+                                    background:`linear-gradient(135deg,${s.cor}15,${s.cor}05)`,
+                                    border:`1px solid ${s.cor}40`,
+                                    borderRadius:10,cursor:"pointer",
+                                    transition:"all .15s"
+                                  }}
+                                  onMouseEnter={e=>{e.currentTarget.style.borderColor=s.cor; e.currentTarget.style.transform="translateY(-1px)";}}
+                                  onMouseLeave={e=>{e.currentTarget.style.borderColor=`${s.cor}40`; e.currentTarget.style.transform="translateY(0)";}}
+                                  >
+                                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                                      <div style={{fontSize:9,color:s.cor,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase"}}>{s.emoji} {s.label}</div>
+                                      <div style={{fontSize:10,color:"#64748b"}}>R$ {Number(k.potencial_perdido||0).toLocaleString('pt-BR',{maximumFractionDigits:0})}</div>
+                                    </div>
+                                    <div style={{fontSize:12,fontWeight:700,color:"#e2e8f0",marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{k.cliente_nome}</div>
+                                    <div style={{fontSize:10,color:"#94a3b8"}}>📍 {k.cliente_cidade || '—'}</div>
+                                    {k.tags && (
+                                      <div style={{marginTop:6,display:"flex",flexWrap:"wrap",gap:3}}>
+                                        {String(k.tags).split(';').filter(Boolean).slice(0,2).map(tag => (
+                                          <span key={tag} style={{fontSize:9,padding:"2px 6px",borderRadius:8,background:"rgba(168,85,247,0.15)",color:"#c4b5fd",border:"1px solid rgba(168,85,247,0.2)"}}>{tag}</span>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })()}
+
+
           <div style={{animation:"fadeIn .4s ease"}}>
             {/* Filtros */}
             <div style={{
@@ -6611,6 +6895,30 @@ function CRMPeteca() {
         );
       })()}
 
+      {/* MODAL LOGIN ADMIN (opcional) */}
+      {adminLoginModal && (() => {
+        const [loginNome, setLoginNome] = [null, null]; // placeholders - use refs internos
+        // usamos um mini-estado inline via closure... vou usar approach diferente
+        return <AdminLoginModal onClose={() => setAdminLoginModal(false)} onLogin={(u) => { setAdminUser(u); setAdminLoginModal(false); showToast(`Olá, ${u.nome}! 👋`); }} callKanbanAPI={callKanbanAPI} />;
+      })()}
+
+      {/* MODAL ENVIAR AO KANBAN */}
+      {enviarKanbanModal && (
+        <EnviarKanbanModal
+          cliente={enviarKanbanModal.cliente}
+          onClose={() => setEnviarKanbanModal(null)}
+          onSuccess={(nomeCliente, vendedor) => {
+            showToast(`🎱 "${nomeCliente}" enviado ao Kanban de ${vendedor}!`);
+            setEnviarKanbanModal(null);
+            setAbandonoModal(null);
+          }}
+          onDuplicate={() => showToast("⚠ Este cliente já tem Kanban ativo", "warning")}
+          onError={(err) => showToast("Erro: " + err, "error")}
+          callKanbanAPI={callKanbanAPI}
+          adminName={adminName}
+        />
+      )}
+
       {/* TOAST */}
       {toast && (
         <div style={{
@@ -6639,6 +6947,203 @@ function CRMPeteca() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ============================================================
+// MODAL ENVIAR AO KANBAN
+// ============================================================
+function EnviarKanbanModal({ cliente, onClose, onSuccess, onDuplicate, onError, callKanbanAPI, adminName }) {
+  const [vendedor, setVendedor] = useState('');
+  const [obs, setObs] = useState('');
+  const [loading, setLoading] = useState(false);
+  
+  // Calcular valores com segurança (NaN-safe)
+  const fatHist = Number(cliente.total) || 0;
+  const vendasCount = Number(cliente.vendas) || 0;
+  const ticketMedio = vendasCount > 0 ? fatHist / vendasCount : 0;
+  const diasSemCompra = Number(cliente.diasSemCompra) || 0;
+  const potPerdidoRaw = cliente.potencialPerdido != null && !isNaN(cliente.potencialPerdido) 
+    ? Number(cliente.potencialPerdido) 
+    : ticketMedio * Math.max(1, Math.floor(diasSemCompra / 30));
+  const potPerdido = (isNaN(potPerdidoRaw) ? 0 : potPerdidoRaw);
+  
+  // ID do cliente: pega primeiro membro, ou fallback pra código/id direto
+  const clienteId = (cliente.membros && cliente.membros.length > 0) 
+    ? cliente.membros[0] 
+    : (cliente.i || cliente.code || 'NOVO_' + Date.now());
+  
+  const vendedoresDropdown = ["RODRIGO", "DENIS", "ANE", "ANDERSON", "LEX", "REGINALDO"];
+  
+  const enviar = async () => {
+    if (!vendedor) return;
+    setLoading(true);
+    try {
+      const res = await callKanbanAPI('create', {
+        cliente_id: String(clienteId),
+        cliente_nome: cliente.nome || 'Cliente sem nome',
+        cliente_cidade: cliente.cidade || '',
+        vendedor: vendedor,
+        faturamento_hist: fatHist,
+        potencial_perdido: potPerdido,
+        observacoes: obs || '',
+        criado_por: adminName || 'Admin'
+      });
+      
+      if (res.ok) {
+        onSuccess(cliente.nome, vendedor);
+        return;
+      }
+      
+      // Erro "já existe"
+      if (res.error && res.error.toLowerCase().includes('já possui kanban')) {
+        setLoading(false);
+        onDuplicate();
+        onClose();
+        return;
+      }
+      
+      // Outros erros
+      setLoading(false);
+      onError(res.error || 'desconhecido');
+    } catch (err) {
+      setLoading(false);
+      onError(err.message || 'Erro de rede');
+    }
+  };
+  
+  return (
+    <div onClick={() => !loading && onClose()} style={{
+      position:"fixed",inset:0,background:"rgba(0,0,0,0.7)",backdropFilter:"blur(6px)",
+      zIndex:1200,display:"flex",alignItems:"center",justifyContent:"center",padding:20,animation:"fadeIn .2s"
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width:"100%",maxWidth:480,background:"rgba(13,21,38,0.95)",
+        backdropFilter:"blur(20px) saturate(180%)",
+        border:"1px solid rgba(168,85,247,0.3)",borderRadius:16,
+        boxShadow:"0 20px 60px rgba(0,0,0,0.5)",animation:"scaleIn .25s",overflow:"hidden"
+      }}>
+        <div style={{background:"linear-gradient(135deg,rgba(99,102,241,0.2),rgba(168,85,247,0.15))",padding:"18px 22px",borderBottom:"1px solid rgba(168,85,247,0.2)"}}>
+          <div style={{fontSize:11,color:"#c4b5fd",letterSpacing:1.5,textTransform:"uppercase",fontWeight:700,marginBottom:4}}>🎱 Enviar ao Kanban</div>
+          <div style={{fontSize:16,fontWeight:800,color:"#e2e8f0",letterSpacing:-0.3,marginBottom:2}}>{cliente.nome}</div>
+          <div style={{fontSize:11,color:"#94a3b8"}}>📍 {cliente.cidade || '—'} • {vendasCount} compras • R$ {fatHist.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+        </div>
+        
+        <div style={{padding:22}}>
+          <div style={{marginBottom:16}}>
+            <label style={{fontSize:11,color:"#64748b",textTransform:"uppercase",letterSpacing:1,fontWeight:600,display:"block",marginBottom:6}}>Vendedor responsável</label>
+            <select 
+              value={vendedor} 
+              onChange={e => setVendedor(e.target.value)}
+              disabled={loading}
+              style={{width:"100%",padding:"11px 14px",background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,color:"#e2e8f0",fontSize:14,cursor:"pointer"}}
+            >
+              <option value="">Selecione...</option>
+              {vendedoresDropdown.map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </div>
+          
+          <div style={{marginBottom:16}}>
+            <label style={{fontSize:11,color:"#64748b",textTransform:"uppercase",letterSpacing:1,fontWeight:600,display:"block",marginBottom:6}}>Observação inicial (opcional)</label>
+            <textarea 
+              value={obs}
+              onChange={e => setObs(e.target.value)}
+              placeholder="Ex: Cliente não compra há 90 dias. Priorizar contato."
+              rows={3}
+              disabled={loading}
+              style={{width:"100%",padding:"11px 14px",background:"rgba(255,255,255,0.02)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:10,color:"#e2e8f0",fontSize:13,resize:"vertical",fontFamily:"inherit"}}
+            />
+          </div>
+          
+          <div style={{padding:"10px 12px",background:"rgba(168,85,247,0.08)",border:"1px solid rgba(168,85,247,0.2)",borderRadius:8,fontSize:11,color:"#c4b5fd",marginBottom:16,lineHeight:1.5}}>
+            💡 O vendedor verá esse cliente como bolinha no portal dele. O tamanho será proporcional ao potencial perdido ({potPerdido > 0 ? '≈ R$ ' + potPerdido.toLocaleString('pt-BR',{minimumFractionDigits:2}) : 'bolinha pequena - sem histórico'}).
+          </div>
+          
+          <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+            <button onClick={onClose} disabled={loading} style={{padding:"10px 18px",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:8,color:"#94a3b8",fontSize:12,fontWeight:600,cursor:"pointer"}}>Cancelar</button>
+            <button onClick={enviar} disabled={loading || !vendedor} style={{
+              padding:"10px 18px",
+              background: (loading || !vendedor) ? "rgba(99,102,241,0.3)" : "linear-gradient(135deg,#6366f1,#a855f7)",
+              border:"none",borderRadius:8,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",
+              boxShadow: (loading || !vendedor) ? "none" : "0 4px 12px rgba(99,102,241,0.3)",
+              display:"flex",alignItems:"center",gap:8
+            }}>
+              {loading ? <><span style={{display:"inline-block",width:12,height:12,border:"2px solid #fff",borderTopColor:"transparent",borderRadius:"50%",animation:"spin 0.8s linear infinite"}}></span>Enviando...</> : <>🎱 Enviar</>}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// MODAL DE LOGIN ADMIN (opcional)
+// ============================================================
+function AdminLoginModal({ onClose, onLogin, callKanbanAPI }) {
+  const [nome, setNome] = useState('');
+  const [senha, setSenha] = useState('');
+  const [erro, setErro] = useState('');
+  const [loading, setLoading] = useState(false);
+  
+  const doLogin = async () => {
+    if (!nome || !senha) { setErro('Selecione seu nome e digite a senha'); return; }
+    setErro(''); setLoading(true);
+    const res = await callKanbanAPI('login', { nome, senha });
+    setLoading(false);
+    if (res.ok && res.user.tipo === 'admin') {
+      onLogin(res.user);
+    } else if (res.ok) {
+      setErro('Esse usuário não é admin. Portal do vendedor é no outro link.');
+    } else {
+      setErro(res.error || 'Erro ao fazer login');
+    }
+  };
+  
+  return (
+    <div onClick={() => !loading && onClose()} style={{
+      position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',backdropFilter:'blur(6px)',
+      zIndex:1500,display:'flex',alignItems:'center',justifyContent:'center',padding:20,animation:'fadeIn .2s'
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width:'100%',maxWidth:380,background:'rgba(13,21,38,0.95)',
+        backdropFilter:'blur(20px) saturate(180%)',
+        border:'1px solid rgba(34,197,94,0.3)',borderRadius:16,
+        boxShadow:'0 20px 60px rgba(0,0,0,0.5)',animation:'scaleIn .25s',
+        padding:28
+      }}>
+        <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:18}}>
+          <div style={{width:40,height:40,borderRadius:10,background:'linear-gradient(135deg,#10b981,#22c55e)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,boxShadow:'0 4px 16px rgba(16,185,129,0.3)'}}>👤</div>
+          <div>
+            <div style={{fontSize:16,fontWeight:800,letterSpacing:-0.3}}>Identificar-se</div>
+            <div style={{fontSize:11,color:'#64748b',marginTop:2}}>Opcional • Rastreia suas ações no histórico</div>
+          </div>
+        </div>
+        
+        <div style={{marginBottom:14}}>
+          <label style={{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,display:'block',marginBottom:6}}>Nome</label>
+          <select value={nome} onChange={e => setNome(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') doLogin(); }} style={{width:'100%',padding:'10px 14px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:10,color:'#e2e8f0',fontSize:14,cursor:'pointer'}}>
+            <option value="">Selecione...</option>
+            <option value="BRUNO">BRUNO</option>
+            <option value="JUNIOR">JUNIOR</option>
+          </select>
+        </div>
+        
+        <div style={{marginBottom:16}}>
+          <label style={{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,display:'block',marginBottom:6}}>Senha</label>
+          <input type="password" value={senha} onChange={e => setSenha(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') doLogin(); }} placeholder="••••••••" style={{width:'100%',padding:'10px 14px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:10,color:'#e2e8f0',fontSize:14}} />
+        </div>
+        
+        {erro && <div style={{background:'rgba(239,68,68,0.1)',border:'1px solid rgba(239,68,68,0.3)',borderRadius:8,padding:'8px 12px',color:'#fca5a5',fontSize:11,marginBottom:14}}>⚠ {erro}</div>}
+        
+        <div style={{display:'flex',gap:8}}>
+          <button onClick={onClose} disabled={loading} style={{flex:1,padding:'10px',background:'rgba(255,255,255,0.04)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:8,color:'#94a3b8',fontSize:12,fontWeight:600,cursor:'pointer'}}>Cancelar</button>
+          <button onClick={doLogin} disabled={loading} style={{flex:1,padding:'10px',background:loading?'rgba(16,185,129,0.3)':'linear-gradient(135deg,#10b981,#22c55e)',border:'none',borderRadius:8,color:'#fff',fontSize:12,fontWeight:700,cursor:'pointer',boxShadow:loading?'none':'0 4px 12px rgba(16,185,129,0.3)',display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
+            {loading ? <><span style={{display:'inline-block',width:12,height:12,border:'2px solid #fff',borderTopColor:'transparent',borderRadius:'50%',animation:'spin 0.8s linear infinite'}}></span>Entrando...</> : <>🔓 Entrar</>}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
