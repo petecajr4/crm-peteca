@@ -1472,6 +1472,9 @@ function CRMPeteca() {
       const now = new Date().toISOString();
       setLastBackup(now);
       try { await window.storage.set(BACKUP_DATE_KEY, now); } catch(e) {}
+      // v4: Limpar adiamento quando faz backup
+      setBackupAdiadoAte(0);
+      try { localStorage.removeItem('peteca_backup_adiado_ate'); } catch(e) {}
       showToast(`✅ Backup exportado! (${sizeMB}MB, ${totalVendas} vendas, ${clientes.length} clientes)`);
     } catch(e) {
       console.error("Erro ao exportar:", e);
@@ -1566,11 +1569,31 @@ function CRMPeteca() {
     };
   }, [clientes, mods, getClientData]);
 
+  // v4: Tick que atualiza a cada minuto pra recalcular dias do backup (sem precisar recarregar)
+  const [backupTick, setBackupTick] = useState(0);
+  useEffect(() => {
+    const interval = setInterval(() => setBackupTick(t => t + 1), 60000); // 1 min
+    return () => clearInterval(interval);
+  }, []);
+
   // Dias desde último backup
   const backupDays = useMemo(() => {
     if (!lastBackup) return 999;
     return Math.floor((Date.now() - new Date(lastBackup).getTime()) / 86400000);
-  }, [lastBackup]);
+    // eslint-disable-next-line
+  }, [lastBackup, backupTick]);
+
+  // v4: Sistema de adiar backup ("Lembrar amanhã")
+  const [backupAdiadoAte, setBackupAdiadoAte] = useState(() => {
+    try { return parseInt(localStorage.getItem('peteca_backup_adiado_ate') || '0'); } catch(e) { return 0; }
+  });
+  const adiarBackup = () => {
+    const amanha = Date.now() + 24 * 60 * 60 * 1000;
+    setBackupAdiadoAte(amanha);
+    try { localStorage.setItem('peteca_backup_adiado_ate', String(amanha)); } catch(e) {}
+  };
+  const backupEstaAdiado = backupAdiadoAte > Date.now();
+  const mostrarBannerBackup = backupDays >= 3 && !backupEstaAdiado;
 
   if (loading) {
     return (
@@ -1885,6 +1908,72 @@ function CRMPeteca() {
         position:"relative",
         zIndex:1
       }}>
+
+      {/* v4: BANNER DE BACKUP PENDENTE */}
+      {mostrarBannerBackup && (
+        <div style={{
+          background: backupDays >= 7
+            ? "linear-gradient(135deg, rgba(220,38,38,0.12), rgba(239,68,68,0.08))"
+            : "linear-gradient(135deg, rgba(251,146,60,0.12), rgba(249,115,22,0.08))",
+          borderBottom: backupDays >= 7
+            ? "1px solid rgba(220,38,38,0.3)"
+            : "1px solid rgba(251,146,60,0.3)",
+          padding:"12px 24px",
+          display:"flex",alignItems:"center",justifyContent:"space-between",
+          gap:14,flexWrap:"wrap",
+          animation:"slideDown .3s cubic-bezier(.4,0,.2,1)",
+          position:"sticky",top:0,zIndex:50,
+          backdropFilter:"blur(16px)",
+          WebkitBackdropFilter:"blur(16px)"
+        }}>
+          <div style={{display:"flex",alignItems:"center",gap:12,flex:"1 1 auto",minWidth:280}}>
+            <span style={{fontSize:24,animation: backupDays >= 7 ? "pulse 2s infinite" : "none"}}>
+              {backupDays >= 7 ? "🚨" : "⚠️"}
+            </span>
+            <div>
+              <div style={{
+                fontSize:13,fontWeight:700,
+                color: backupDays >= 7 ? "#fca5a5" : "#fdba74",
+                marginBottom:2
+              }}>
+                {backupDays >= 7 ? "BACKUP CRÍTICO" : "Backup pendente"}
+              </div>
+              <div style={{fontSize:11,color:"#94a3b8",lineHeight:1.4}}>
+                {backupDays >= 999
+                  ? "Você ainda não fez nenhum backup. Cuidado: limpar cache do navegador apaga tudo."
+                  : `Último backup foi há ${backupDays} ${backupDays === 1 ? 'dia' : 'dias'}. Recomendado a cada 3 dias.`
+                }
+              </div>
+            </div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+            <button onClick={adiarBackup} style={{
+              padding:"7px 14px",
+              background:"rgba(255,255,255,0.05)",
+              border:"1px solid rgba(255,255,255,0.12)",
+              borderRadius:8,color:"#94a3b8",
+              fontSize:11,fontWeight:600,cursor:"pointer",whiteSpace:"nowrap"
+            }} onMouseEnter={e => e.currentTarget.style.background="rgba(255,255,255,0.08)"}
+               onMouseLeave={e => e.currentTarget.style.background="rgba(255,255,255,0.05)"}>
+              ⏰ Adiar 1 dia
+            </button>
+            <button onClick={() => setShowBackupModal(true)} style={{
+              padding:"8px 16px",
+              background: backupDays >= 7
+                ? "linear-gradient(135deg,#dc2626,#ef4444)"
+                : "linear-gradient(135deg,#f59e0b,#fb923c)",
+              border:"none",borderRadius:8,color:"#fff",
+              fontSize:12,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap",
+              boxShadow: backupDays >= 7
+                ? "0 4px 12px rgba(220,38,38,0.35)"
+                : "0 4px 12px rgba(251,146,60,0.35)",
+              display:"flex",alignItems:"center",gap:8
+            }}>
+              💾 Fazer backup agora
+            </button>
+          </div>
+        </div>
+      )}
 
       <div style={{padding:"20px 24px",maxWidth:1400,margin:"0 auto"}}>
         {/* DASHBOARD TAB */}
