@@ -7257,6 +7257,11 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
   // v5: Big Bang — onda de choque visual ao iniciar arraste
   const [bigBang, setBigBang] = useState(null); // {x, y, time, color}
   
+  // v6: Banimento dramático — intrusos voam pra fora ao colidir
+  const banidosRef = useRef({}); // id -> { phase, startTime, fromX, fromY, vx, vy, rot, rotSpeed, color, trail }
+  // phase: 'flying' (saindo) | 'banned' (fora da tela) | 'returning' (voltando)
+  const [, setBanidosRender] = useState(0); // força render quando banidos mudam
+  
   // Anima a onda do Big Bang (re-render contínuo enquanto ativa)
   useEffect(() => {
     if (!bigBang) return;
@@ -7387,6 +7392,8 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
         const p = parts[id];
         if (!p) return;
         if (draggingRef.current?.id === id) return;
+        // Pula banidas (têm sua própria física)
+        if (banidosRef.current[id]) return;
         const kanban = kanbansMap[id];
         const isPerdido = kanban?.status === 'perdido';
         p.x += p.vx; p.y += p.vy;
@@ -7417,6 +7424,8 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
         for (let j = i+1; j < ids.length; j++) {
           const a = parts[ids[i]]; const b = parts[ids[j]];
           if (!a || !b) continue;
+          // Pula colisões com banidas
+          if (banidosRef.current[ids[i]] || banidosRef.current[ids[j]]) continue;
           const dx = b.x - a.x; const dy = b.y - a.y;
           const dist = Math.sqrt(dx*dx + dy*dy);
           const minDist = a.r + b.r + 2;
@@ -7463,15 +7472,15 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
         });
       }
       
-      // VÓRTEX: enquanto arrasta, repele intrusos (de outras cidades) com efeito giratório
+      // VÓRTEX + BANIMENTO: enquanto arrasta, repele E bani intrusos ao tocar
       if (dragId) {
         const grupoArrastado = idToGrupo[dragId];
         if (grupoArrastado) {
           const dragP = parts[dragId];
           if (dragP) {
-            const RAIO_VORTEX = 250; // raio de influência
-            const FORCA_REPULSAO = 1.4; // força de empurrão pra fora
-            const FORCA_ROTACAO = 0.5; // força tangencial (gira)
+            const RAIO_VORTEX = 250; // raio de influência (vórtex)
+            const FORCA_REPULSAO = 1.4;
+            const FORCA_ROTACAO = 0.5;
             
             ids.forEach(id => {
               if (id === dragId) return;
@@ -7479,24 +7488,48 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
               // Só afeta intrusos (de OUTRA cidade ou sem cidade)
               if (grupoBolinha && grupoBolinha.cidade === grupoArrastado.cidade) return;
               
+              // Já banido? Pula
+              if (banidosRef.current[id]) return;
+              
               const intruso = parts[id];
               if (!intruso) return;
               
               const dx = intruso.x - dragP.x;
               const dy = intruso.y - dragP.y;
               const dist = Math.sqrt(dx*dx + dy*dy);
+              const distColisao = dragP.r + intruso.r + 4;
               
+              // 💥 COLISÃO REAL — BANIR A INTRUSA
+              if (dist < distColisao && dist > 0.1) {
+                const nx = dx/dist;
+                const ny = dy/dist;
+                // Velocidade absurdamente alta + componente tangencial pra espiral
+                const vForte = 28;
+                const vRot = 12;
+                banidosRef.current[id] = {
+                  phase: 'flying',
+                  startTime: Date.now(),
+                  vx: nx * vForte + (-ny) * vRot,
+                  vy: ny * vForte + nx * vRot,
+                  rot: 0,
+                  rotSpeed: (Math.random() - 0.5) * 0.4 + 0.2, // gira rápido
+                  color: grupoBolinha ? grupoBolinha.cor : '#94a3b8',
+                  trail: []
+                };
+                // Marca posição inicial pra fase de retorno saber de onde voltar
+                banidosRef.current[id].fromCenterX = dragP.x;
+                banidosRef.current[id].fromCenterY = dragP.y;
+                setBanidosRender(r => r + 1);
+                return;
+              }
+              
+              // Caso contrário: vórtex normal (repulsão giratória)
               if (dist < RAIO_VORTEX && dist > 1) {
                 const nx = dx/dist;
                 const ny = dy/dist;
-                // Força inversamente proporcional à distância (mais perto = empurrão maior)
                 const intensidade = (1 - dist / RAIO_VORTEX);
-                
-                // Repulsão radial (pra fora)
                 intruso.vx += nx * FORCA_REPULSAO * intensidade;
                 intruso.vy += ny * FORCA_REPULSAO * intensidade;
-                
-                // Rotação tangencial (perpendicular à direção radial — efeito espiral)
                 intruso.vx += -ny * FORCA_ROTACAO * intensidade;
                 intruso.vy += nx * FORCA_ROTACAO * intensidade;
               }
@@ -7504,6 +7537,53 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
           }
         }
       }
+      
+      // 🌀 ANIMAÇÃO DAS BANIDAS (espiral pra fora + trail)
+      Object.keys(banidosRef.current).forEach(id => {
+        const b = banidosRef.current[id];
+        const p = parts[id];
+        if (!p || !b) return;
+        
+        if (b.phase === 'flying') {
+          // Move com inércia (sem damping pra não desacelerar)
+          p.x += b.vx;
+          p.y += b.vy;
+          b.rot += b.rotSpeed;
+          
+          // Adiciona ponto ao trail (max 12 pontos)
+          b.trail.push({ x: p.x, y: p.y, time: Date.now() });
+          if (b.trail.length > 12) b.trail.shift();
+          
+          // Saiu da tela? Marca como banida (esconde da renderização)
+          const margem = 100;
+          if (p.x < -margem || p.x > w + margem || p.y < -margem || p.y > h + margem) {
+            b.phase = 'banned';
+            // Move pra MUITO fora (não interfere em colisões)
+            p.x = -9999;
+            p.y = -9999;
+            p.vx = 0; p.vy = 0;
+          }
+        } else if (b.phase === 'returning') {
+          // Anima retorno: vai do ponto da borda pro centro do alvo
+          const elapsed = Date.now() - b.returnStart;
+          const dur = 700; // 700ms pra voltar
+          const t = Math.min(elapsed / dur, 1);
+          // Easing: easeOutCubic
+          const ease = 1 - Math.pow(1 - t, 3);
+          p.x = b.returnFromX + (b.returnToX - b.returnFromX) * ease;
+          p.y = b.returnFromY + (b.returnToY - b.returnFromY) * ease;
+          b.rot = (1 - t) * 6; // para de girar conforme chega
+          
+          if (t >= 1) {
+            // Chegou! Limpa banimento, devolve velocidade leve
+            const ang = Math.random() * Math.PI * 2;
+            p.vx = Math.cos(ang) * 1.5;
+            p.vy = Math.sin(ang) * 1.5;
+            delete banidosRef.current[id];
+            setBanidosRender(r => r + 1);
+          }
+        }
+      });
       
       setTick(t => t + 1);
       requestAnimationFrame(tickFn);
@@ -7578,6 +7658,54 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
       if (p) { p.vx = d.velX * 1.2; p.vy = d.velY * 1.2; }
     }
     draggingRef.current = null;
+    
+    // 🌀 RETORNO EM CASCATA: trazer banidas de volta uma a uma
+    const banidosIds = Object.keys(banidosRef.current).filter(bid => 
+      banidosRef.current[bid].phase === 'flying' || banidosRef.current[bid].phase === 'banned'
+    );
+    
+    banidosIds.forEach((bid, idx) => {
+      setTimeout(() => {
+        const b = banidosRef.current[bid];
+        if (!b) return;
+        const p = particlesRef.current[bid];
+        if (!p) return;
+        
+        const { w, h } = dimensions;
+        const centroX = b.fromCenterX || w/2;
+        const centroY = b.fromCenterY || h/2;
+        
+        // Posição final: lado OPOSTO do aglomerado, mas dentro da tela
+        const dxC = centroX - w/2;
+        const dyC = centroY - h/2;
+        const distC = Math.sqrt(dxC*dxC + dyC*dyC) || 1;
+        // Vetor oposto normalizado
+        const oppNx = -dxC / distC;
+        const oppNy = -dyC / distC;
+        // Aleatoriedade na posição final
+        const angRand = Math.random() * Math.PI * 2;
+        const distFinal = 200 + Math.random() * 150;
+        const toX = Math.max(60, Math.min(w - 60, w/2 + oppNx * distFinal + Math.cos(angRand) * 80));
+        const toY = Math.max(60, Math.min(h - 60, h/2 + oppNy * distFinal + Math.sin(angRand) * 80));
+        
+        // Posição de entrada: borda da tela na direção da posição final
+        const angEntry = Math.atan2(toY - h/2, toX - w/2);
+        const fromX = w/2 + Math.cos(angEntry) * (Math.max(w, h) * 0.7);
+        const fromY = h/2 + Math.sin(angEntry) * (Math.max(w, h) * 0.7);
+        
+        b.phase = 'returning';
+        b.returnStart = Date.now();
+        b.returnFromX = fromX;
+        b.returnFromY = fromY;
+        b.returnToX = toX;
+        b.returnToY = toY;
+        // Posiciona na entrada
+        p.x = fromX;
+        p.y = fromY;
+        p.vx = 0; p.vy = 0;
+        setBanidosRender(r => r + 1);
+      }, idx * 100); // 100ms entre cada
+    });
   };
   
   return (
@@ -7660,6 +7788,33 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
         );
       })()}
 
+      {/* 🌠 TRAIL DAS BANIDAS (rastro de cometa) */}
+      {(() => {
+        const flying = Object.entries(banidosRef.current).filter(([_, b]) => b.phase === 'flying' && b.trail.length > 1);
+        if (flying.length === 0) return null;
+        return (
+          <svg style={{position:'absolute',inset:0,width:'100%',height:'100%',pointerEvents:'none',zIndex:40}}>
+            {flying.map(([id, b]) => {
+              const pts = b.trail;
+              if (pts.length < 2) return null;
+              return pts.slice(0, -1).map((pt, i) => {
+                const next = pts[i + 1];
+                const ratio = (i + 1) / pts.length;
+                return (
+                  <line key={id+'_'+i}
+                    x1={pt.x} y1={pt.y}
+                    x2={next.x} y2={next.y}
+                    stroke={b.color}
+                    strokeWidth={2 + ratio * 6}
+                    strokeOpacity={ratio * 0.8}
+                    strokeLinecap="round"/>
+                );
+              });
+            })}
+          </svg>
+        );
+      })()}
+
       {/* Tag flutuante da cidade destacada (só se tem filtro) */}
       {cidadeDestacada && (() => {
         const grupo = gruposCidade.find(g => g.cidade === cidadeDestacada);
@@ -7695,6 +7850,11 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
       {kanbans.map(k => {
         const p = particlesRef.current[k.id];
         if (!p) return null;
+        
+        // Banidas: estado especial
+        const banimento = banidosRef.current[k.id];
+        if (banimento && banimento.phase === 'banned') return null; // não renderiza enquanto fora
+        
         const s = STATUS_CORES[k.status] || STATUS_CORES.aberto;
         const size = p.r * 2;
         const fontSize = Math.max(9, Math.min(14, size * 0.14));
@@ -7725,27 +7885,36 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
         let opacity = k.status === 'perdido' ? 0.7 : 1;
         if (isOutraCidade) opacity = 0.35;
         
+        // Banida: rotação dramática + brilho
+        const isBanida = !!banimento;
+        const rotacao = banimento ? banimento.rot : 0;
+        const sombraBanida = banimento 
+          ? `0 0 30px 6px ${banimento.color}cc, 0 0 60px 12px ${banimento.color}66, ${boxShadow}`
+          : null;
+        
         return (
           <div
             key={k.id}
             className="bubble"
-            onMouseDown={e => onMouseDown(e, k.id)}
-            onMouseUp={() => onMouseUp(k.id)}
-            onMouseEnter={() => setHoveredId(k.id)}
+            onMouseDown={e => !isBanida && onMouseDown(e, k.id)}
+            onMouseUp={() => !isBanida && onMouseUp(k.id)}
+            onMouseEnter={() => !isBanida && setHoveredId(k.id)}
             onMouseLeave={() => setHoveredId(null)}
             style={{
               left: p.x - p.r, top: p.y - p.r, width: size, height: size,
               background: `radial-gradient(circle at 35% 30%, ${s.cor}ee, ${s.corEscura}dd)`,
               border: `${larguraBorda}px solid ${corBorda}`,
-              boxShadow: boxShadow,
+              boxShadow: sombraBanida || boxShadow,
               color: '#fff', fontSize: fontSize,
               opacity: opacity,
               position: 'absolute', borderRadius: '50%',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              textAlign: 'center', cursor: 'grab', userSelect: 'none',
+              textAlign: 'center', cursor: isBanida ? 'default' : 'grab', userSelect: 'none',
               fontWeight: 700, padding: 6, overflow: 'hidden', lineHeight: 1.1,
-              transition: 'opacity .25s, box-shadow .25s, border-color .25s',
-              zIndex: isHovered ? 30 : (isIrma ? 20 : 10)
+              transition: isBanida ? 'none' : 'opacity .25s, box-shadow .25s, border-color .25s',
+              transform: isBanida ? `rotate(${rotacao}rad)` : 'none',
+              zIndex: isBanida ? 50 : (isHovered ? 30 : (isIrma ? 20 : 10)),
+              pointerEvents: isBanida ? 'none' : 'auto'
             }}
             title={`${k.cliente_nome} • ${k.vendedor}${grupoDaCidade ? ' • 📍 ' + grupoDaCidade.cidade : ''}`}
           >
