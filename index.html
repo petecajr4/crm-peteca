@@ -7254,7 +7254,39 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
   const [, setTick] = useState(0);
   const [hoveredId, setHoveredId] = useState(null);
   
-  // Grupos por cidade para linhas (sempre visíveis) — mapa cidade -> array de ids
+  // v5: Big Bang — onda de choque visual ao iniciar arraste
+  const [bigBang, setBigBang] = useState(null); // {x, y, time, color}
+  
+  // Anima a onda do Big Bang (re-render contínuo enquanto ativa)
+  useEffect(() => {
+    if (!bigBang) return;
+    let raf;
+    const tick = () => {
+      setTick(t => t + 1);
+      const elapsed = Date.now() - bigBang.time;
+      if (elapsed < 600) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [bigBang]);
+  
+  // PALETA EXTREMA (12 cores muito distintas, sem conflito com status azul/verde/laranja/cinza)
+  const PALETA_CIDADES = [
+    '#ec4899', // rosa choque
+    '#a855f7', // roxo neon
+    '#22d3ee', // ciano elétrico
+    '#ffd60a', // amarelo solar
+    '#d946ef', // magenta
+    '#14b8a6', // turquesa
+    '#ff5252', // vermelho coral
+    '#a3e635', // lima
+    '#fdba74', // coral pêssego
+    '#34d399', // verde menta
+    '#c084fc', // lavanda
+    '#facc15'  // dourado
+  ];
+  
+  // Grupos por cidade (mapa cidade -> array de ids)
   const gruposCidade = useMemo(() => {
     const mapa = {};
     kanbans.forEach(k => {
@@ -7262,15 +7294,15 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
       if (!mapa[cidade]) mapa[cidade] = [];
       mapa[cidade].push(k.id);
     });
-    // Só retorna grupos com 2+ bolinhas e gera uma cor por cidade
+    // Só retorna grupos com 2+ bolinhas e atribui cor da paleta
     return Object.entries(mapa)
       .filter(([_, ids]) => ids.length >= 2)
-      .map(([cidade, ids], i) => {
-        // Cor derivada do hash da cidade (estável)
+      .map(([cidade, ids]) => {
+        // Hash estável da cidade pra cor consistente
         let hash = 0;
         for (let c = 0; c < cidade.length; c++) hash = ((hash << 5) - hash) + cidade.charCodeAt(c);
-        const hue = Math.abs(hash) % 360;
-        return { cidade, ids, cor: `hsl(${hue}, 70%, 65%)` };
+        const idx = Math.abs(hash) % PALETA_CIDADES.length;
+        return { cidade, ids, cor: PALETA_CIDADES[idx] };
       });
   }, [kanbans]);
   
@@ -7431,17 +7463,103 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
         });
       }
       
+      // VÓRTEX: enquanto arrasta, repele intrusos (de outras cidades) com efeito giratório
+      if (dragId) {
+        const grupoArrastado = idToGrupo[dragId];
+        if (grupoArrastado) {
+          const dragP = parts[dragId];
+          if (dragP) {
+            const RAIO_VORTEX = 250; // raio de influência
+            const FORCA_REPULSAO = 1.4; // força de empurrão pra fora
+            const FORCA_ROTACAO = 0.5; // força tangencial (gira)
+            
+            ids.forEach(id => {
+              if (id === dragId) return;
+              const grupoBolinha = idToGrupo[id];
+              // Só afeta intrusos (de OUTRA cidade ou sem cidade)
+              if (grupoBolinha && grupoBolinha.cidade === grupoArrastado.cidade) return;
+              
+              const intruso = parts[id];
+              if (!intruso) return;
+              
+              const dx = intruso.x - dragP.x;
+              const dy = intruso.y - dragP.y;
+              const dist = Math.sqrt(dx*dx + dy*dy);
+              
+              if (dist < RAIO_VORTEX && dist > 1) {
+                const nx = dx/dist;
+                const ny = dy/dist;
+                // Força inversamente proporcional à distância (mais perto = empurrão maior)
+                const intensidade = (1 - dist / RAIO_VORTEX);
+                
+                // Repulsão radial (pra fora)
+                intruso.vx += nx * FORCA_REPULSAO * intensidade;
+                intruso.vy += ny * FORCA_REPULSAO * intensidade;
+                
+                // Rotação tangencial (perpendicular à direção radial — efeito espiral)
+                intruso.vx += -ny * FORCA_ROTACAO * intensidade;
+                intruso.vy += nx * FORCA_ROTACAO * intensidade;
+              }
+            });
+          }
+        }
+      }
+      
       setTick(t => t + 1);
       requestAnimationFrame(tickFn);
     };
     const raf = requestAnimationFrame(tickFn);
     return () => { running = false; cancelAnimationFrame(raf); };
-  }, [kanbans, dimensions, gruposCidade]);
+  }, [kanbans, dimensions, gruposCidade, idToGrupo]);
   
+  // 💥 BIG BANG: dispara onda de choque que arremessa intrusos pra fora
+  const dispararBigBang = (id) => {
+    const p = particlesRef.current[id];
+    if (!p) return;
+    
+    const grupoArrastado = idToGrupo[id];
+    const cor = grupoArrastado ? grupoArrastado.cor : '#ffffff';
+    
+    // Onda visual
+    setBigBang({ x: p.x, y: p.y, time: Date.now(), color: cor });
+    setTimeout(() => setBigBang(null), 600);
+    
+    // Arremesso físico nos intrusos (de outras cidades) próximos
+    if (grupoArrastado) {
+      const RAIO_BANG = 350;
+      const FORCA_BANG = 18; // bem forte
+      
+      Object.keys(particlesRef.current).forEach(otherId => {
+        if (otherId === id) return;
+        const grupoOutro = idToGrupo[otherId];
+        // Só explode intrusos
+        if (grupoOutro && grupoOutro.cidade === grupoArrastado.cidade) return;
+        
+        const intruso = particlesRef.current[otherId];
+        if (!intruso) return;
+        
+        const dx = intruso.x - p.x;
+        const dy = intruso.y - p.y;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        
+        if (dist < RAIO_BANG && dist > 1) {
+          const nx = dx/dist;
+          const ny = dy/dist;
+          // Força inversamente proporcional à distância
+          const intensidade = Math.pow(1 - dist / RAIO_BANG, 2);
+          intruso.vx += nx * FORCA_BANG * intensidade;
+          intruso.vy += ny * FORCA_BANG * intensidade;
+        }
+      });
+    }
+  };
+
   const onMouseDown = (e, id) => {
     const rect = containerRef.current.getBoundingClientRect();
     const p = particlesRef.current[id]; if (!p) return;
     draggingRef.current = { id, offsetX: e.clientX-rect.left-p.x, offsetY: e.clientY-rect.top-p.y, moved: false, startX: e.clientX, startY: e.clientY, lastX: p.x, lastY: p.y, velX: 0, velY: 0 };
+    // 💥 Dispara Big Bang
+    dispararBigBang(id);
   };
   const onMouseMove = (e) => {
     const d = draggingRef.current; if (!d) return;
@@ -7480,6 +7598,68 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
       <div style={{position:'absolute',left:0,right:0,top:'70%',height:1,background:'linear-gradient(90deg, transparent, rgba(107,114,128,0.2), transparent)',pointerEvents:'none'}}></div>
       <div style={{position:'absolute',left:14,top:'calc(70% + 8px)',fontSize:9,color:'rgba(107,114,128,0.5)',letterSpacing:2,textTransform:'uppercase',fontWeight:600,pointerEvents:'none'}}>⚫ Perdidos</div>
       
+      {/* 💥 ONDA DE CHOQUE BIG BANG */}
+      {bigBang && (() => {
+        const elapsed = Date.now() - bigBang.time;
+        const progress = Math.min(elapsed / 600, 1); // 600ms duração
+        const raio = progress * 400; // expande até 400px
+        const opacity = 1 - progress; // fade out
+        return (
+          <>
+            {/* Anel principal */}
+            <div style={{
+              position:'absolute',
+              left: bigBang.x - raio,
+              top: bigBang.y - raio,
+              width: raio * 2,
+              height: raio * 2,
+              borderRadius:'50%',
+              border: `${4 - progress * 3}px solid ${bigBang.color}`,
+              boxShadow: `0 0 ${40 * (1-progress)}px ${bigBang.color}, inset 0 0 ${30 * (1-progress)}px ${bigBang.color}88`,
+              opacity: opacity,
+              pointerEvents:'none',
+              zIndex: 5
+            }}/>
+            {/* Anel secundário (delay) */}
+            {elapsed > 50 && (() => {
+              const elapsed2 = elapsed - 50;
+              const progress2 = Math.min(elapsed2 / 550, 1);
+              const raio2 = progress2 * 320;
+              const opacity2 = (1 - progress2) * 0.7;
+              return (
+                <div style={{
+                  position:'absolute',
+                  left: bigBang.x - raio2,
+                  top: bigBang.y - raio2,
+                  width: raio2 * 2,
+                  height: raio2 * 2,
+                  borderRadius:'50%',
+                  border: `2px solid #fff`,
+                  opacity: opacity2,
+                  pointerEvents:'none',
+                  zIndex: 5
+                }}/>
+              );
+            })()}
+            {/* Flash central */}
+            {progress < 0.3 && (
+              <div style={{
+                position:'absolute',
+                left: bigBang.x - 30,
+                top: bigBang.y - 30,
+                width: 60, height: 60,
+                borderRadius:'50%',
+                background: `radial-gradient(circle, #ffffff ${(1-progress*3)*100}%, transparent 100%)`,
+                opacity: 1 - progress*3,
+                pointerEvents:'none',
+                zIndex: 6,
+                filter: 'blur(8px)'
+              }}/>
+            )}
+          </>
+        );
+      })()}
+
       {/* Tag flutuante da cidade destacada (só se tem filtro) */}
       {cidadeDestacada && (() => {
         const grupo = gruposCidade.find(g => g.cidade === cidadeDestacada);
