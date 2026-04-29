@@ -1410,6 +1410,36 @@ function CRMPeteca() {
     const newMods = {...mods};
     if (!newMods[clientId]) newMods[clientId] = {};
     newMods[clientId].d = ideName;
+    
+    // v6: Se o cliente está com cadastro PENDENTE, herda endereço do primeiro membro do IDE com dados completos
+    const cliente = clientes.find(c => c.i === clientId);
+    if (cliente) {
+      const dadosAtuais = getClientData(cliente);
+      const ehPendente = dadosAtuais.c === "CADASTRO PENDENTE";
+      
+      if (ehPendente) {
+        // Procura outros membros do IDE com endereço completo
+        const membroFonte = clientes
+          .map(c => getClientData(c))
+          .find(c => 
+            c.i !== clientId && 
+            c.d === ideName && 
+            c.c && c.c !== "CADASTRO PENDENTE"
+          );
+        
+        if (membroFonte) {
+          // Herda cidade, bairro, rua, número
+          if (membroFonte.c) newMods[clientId].c = membroFonte.c;
+          if (membroFonte.b) newMods[clientId].b = membroFonte.b;
+          if (membroFonte.r) newMods[clientId].r = membroFonte.r;
+          if (membroFonte.nu) newMods[clientId].nu = membroFonte.nu;
+          saveMods(newMods);
+          showToast(`✓ Adicionado ao IDE ${ideName} • Endereço herdado de ${membroFonte.n}`);
+          return;
+        }
+      }
+    }
+    
     saveMods(newMods);
     showToast(`Cliente adicionado ao grupo ${ideName}`);
   };
