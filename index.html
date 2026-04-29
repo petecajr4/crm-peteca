@@ -1199,67 +1199,6 @@ function CRMPeteca() {
     return s;
   }, [clientes, mods]);
 
-  // v3: Sincronizar clientes com planilha (1x por dia, em background) — pra etiquetas.html
-  useEffect(() => {
-    if (!clientes || clientes.length === 0) return;
-    const CACHE_KEY = 'peteca_clientes_synced_at';
-    const DIA_MS = 24 * 60 * 60 * 1000;
-    
-    try {
-      const ultimoSync = parseInt(localStorage.getItem(CACHE_KEY) || '0');
-      if (Date.now() - ultimoSync < DIA_MS) return; // já sincronizou hoje
-    } catch(e) {}
-    
-    // Extrair endereço do campo `ende` — formato comum: "RUA X, 123" ou "AV Y, 45 SALA 2"
-    const parseEndereco = (ende) => {
-      if (!ende) return { rua: '', numero: '' };
-      const str = String(ende).trim();
-      const match = str.match(/^(.+?),\s*(\d+[a-zA-Z]?)(.*)$/);
-      if (match) return { rua: match[1].trim(), numero: match[2].trim() + (match[3] || '').trim() };
-      return { rua: str, numero: '' };
-    };
-    
-    // Monta payload com clientes ATIVOS (não envia inativos)
-    const clientesPayload = clientes
-      .map(c => getClientData(c))
-      .filter(c => c.a === 1)
-      .map(c => {
-        const { rua, numero } = parseEndereco(c.ende);
-        return {
-          id: c.i,
-          nome: c.n,
-          endereco: rua,
-          numero: numero,
-          bairro: c.b || '',
-          cidade: c.c || '',
-          estado: c.uf || '',
-          cep: c.cep || ''
-        };
-      });
-    
-    // Envia em lotes de 500 via GET (evita CORS e limite de URL)
-    (async () => {
-      try {
-        const LOTE = 500;
-        let total = 0;
-        for (let i = 0; i < clientesPayload.length; i += LOTE) {
-          const lote = clientesPayload.slice(i, i + LOTE);
-          const append = i > 0; // primeiro lote limpa, demais anexam
-          const url = KANBAN_API + '?action=saveClientes&t=' + Date.now() +
-                      '&payload=' + encodeURIComponent(JSON.stringify({ clientes: lote, append: append }));
-          const res = await fetch(url);
-          const data = await res.json();
-          if (!data.ok) throw new Error(data.error || 'Erro no lote ' + (i / LOTE + 1));
-          total += (data.count || 0);
-        }
-        try { localStorage.setItem(CACHE_KEY, String(Date.now())); } catch(e) {}
-        console.log(`✅ ${total} clientes sincronizados com a planilha (etiquetas)`);
-      } catch(e) {
-        console.warn('Sync de clientes falhou (será tentado novamente depois):', e.message);
-      }
-    })();
-  }, [clientes, getClientData]);
-
   // Cidades e IDEs únicos
   const cidades = useMemo(() => {
     const set = new Set(clientes.map(c => c.c));
@@ -7541,39 +7480,6 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
       <div style={{position:'absolute',left:0,right:0,top:'70%',height:1,background:'linear-gradient(90deg, transparent, rgba(107,114,128,0.2), transparent)',pointerEvents:'none'}}></div>
       <div style={{position:'absolute',left:14,top:'calc(70% + 8px)',fontSize:9,color:'rgba(107,114,128,0.5)',letterSpacing:2,textTransform:'uppercase',fontWeight:600,pointerEvents:'none'}}>⚫ Perdidos</div>
       
-      {/* SVG com linhas: só aparecem ao passar mouse numa bolinha (hover) */}
-      {hoveredGrupo && hoveredGrupo.ids.length >= 2 && !aurasDesativadas && (
-        <svg style={{position:'absolute',inset:0,width:'100%',height:'100%',pointerEvents:'none',zIndex:1}}>
-          <defs>
-            <filter id="line-glow" x="-50%" y="-50%" width="200%" height="200%">
-              <feGaussianBlur stdDeviation="2" result="blur"/>
-              <feMerge>
-                <feMergeNode in="blur"/>
-                <feMergeNode in="SourceGraphic"/>
-              </feMerge>
-            </filter>
-          </defs>
-          {(() => {
-            const pares = [];
-            for (let i = 0; i < hoveredGrupo.ids.length; i++) {
-              for (let j = i+1; j < hoveredGrupo.ids.length; j++) {
-                const a = particlesRef.current[hoveredGrupo.ids[i]];
-                const b = particlesRef.current[hoveredGrupo.ids[j]];
-                if (a && b) pares.push({a, b, key: hoveredGrupo.ids[i]+'_'+hoveredGrupo.ids[j]});
-              }
-            }
-            return pares.map(({a, b, key}) => (
-              <line key={key} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-                stroke={hoveredGrupo.cor}
-                strokeWidth="1.5"
-                strokeOpacity="0.7"
-                filter="url(#line-glow)"
-                style={{animation:"pulse 1.5s ease-in-out infinite"}}/>
-            ));
-          })()}
-        </svg>
-      )}
-      
       {/* Tag flutuante da cidade destacada (só se tem filtro) */}
       {cidadeDestacada && (() => {
         const grupo = gruposCidade.find(g => g.cidade === cidadeDestacada);
@@ -7623,16 +7529,16 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
         const isIrma = hoveredGrupo && grupoDaCidade && hoveredGrupo.cidade === grupoDaCidade.cidade && !isHovered;
         const isOutraCidade = hoveredId && !isHovered && !isIrma;
         
-        // Glow/halo
+        // Borda da cidade (substitui o halo)
+        const corBorda = temAura ? grupoDaCidade.cor : s.cor;
+        const larguraBorda = temAura ? 3 : 1.5;
+        
+        // Glow padrão
         let boxShadow = `0 4px 20px ${s.cor}55, inset 0 2px 8px rgba(255,255,255,0.2), inset 0 -4px 10px rgba(0,0,0,0.15)`;
-        if (temAura) {
-          // Halo difuso na cor da cidade
-          boxShadow = `0 0 0 3px ${grupoDaCidade.cor}33, 0 0 18px 4px ${grupoDaCidade.cor}55, ${boxShadow}`;
-        }
         if (isHovered) {
-          boxShadow = `0 0 0 4px ${grupoDaCidade ? grupoDaCidade.cor : s.cor}88, 0 0 30px 8px ${grupoDaCidade ? grupoDaCidade.cor : s.cor}aa, 0 8px 32px ${s.cor}88, inset 0 2px 8px rgba(255,255,255,0.3)`;
+          boxShadow = `0 0 28px 6px ${corBorda}aa, 0 8px 32px ${s.cor}88, inset 0 2px 8px rgba(255,255,255,0.3)`;
         } else if (isIrma) {
-          boxShadow = `0 0 0 3px ${grupoDaCidade.cor}aa, 0 0 24px 6px ${grupoDaCidade.cor}88, 0 4px 20px ${s.cor}66`;
+          boxShadow = `0 0 18px 4px ${corBorda}88, 0 4px 20px ${s.cor}66`;
         }
         
         // Opacidade
@@ -7650,7 +7556,7 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
             style={{
               left: p.x - p.r, top: p.y - p.r, width: size, height: size,
               background: `radial-gradient(circle at 35% 30%, ${s.cor}ee, ${s.corEscura}dd)`,
-              border: `1.5px solid ${s.cor}`,
+              border: `${larguraBorda}px solid ${corBorda}`,
               boxShadow: boxShadow,
               color: '#fff', fontSize: fontSize,
               opacity: opacity,
@@ -7658,7 +7564,7 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               textAlign: 'center', cursor: 'grab', userSelect: 'none',
               fontWeight: 700, padding: 6, overflow: 'hidden', lineHeight: 1.1,
-              transition: 'opacity .25s, box-shadow .25s',
+              transition: 'opacity .25s, box-shadow .25s, border-color .25s',
               zIndex: isHovered ? 30 : (isIrma ? 20 : 10)
             }}
             title={`${k.cliente_nome} • ${k.vendedor}${grupoDaCidade ? ' • 📍 ' + grupoDaCidade.cidade : ''}`}
