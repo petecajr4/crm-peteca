@@ -8489,15 +8489,9 @@ function MergeManagerModal({ onClose, clientes, vendas, aliasClientes, salvarAli
     
     const result = [];
     pendentes.forEach(p => {
-      // Cidade do pendente (vem das vendas, não do cadastro)
-      const cidadePendente = cidadeVendasMap[String(p.i)] || '—';
-      
-      // Procura matches
+      // Procura matches em TODOS os reais (cidade não é mais filtro obrigatório)
       const candidatos = [];
       reais.forEach(r => {
-        // FILTRO 1: cidade DEVE bater
-        if (r.c !== cidadePendente) return;
-        
         const score = similaridade(p.n, r.n);
         if (score >= 70) {
           candidatos.push({ real: r, score });
@@ -8524,7 +8518,7 @@ function MergeManagerModal({ onClose, clientes, vendas, aliasClientes, salvarAli
       
       result.push({
         pendente: p,
-        cidadePendente,
+        cidadePendente: 'Pendente',
         candidato: melhor.real,
         score: melhor.score,
         vendasPendente,
@@ -8536,7 +8530,7 @@ function MergeManagerModal({ onClose, clientes, vendas, aliasClientes, salvarAli
     // Ordena: 100% primeiro, depois por score desc
     result.sort((a, b) => b.score - a.score);
     return result;
-  }, [clientes, vendas, aliasClientes, pendentesIgnorados, cidadeVendasMap, similaridade]);
+  }, [clientes, vendas, aliasClientes, pendentesIgnorados, similaridade]);
   
   const ignorarSugestao = (id) => {
     const novos = [...pendentesIgnorados, String(id)];
@@ -8667,7 +8661,7 @@ function SugestaoLinha({ s, onAceitar, onIgnorar }) {
           <div style={{fontSize:9,color:'#fca5a5',textTransform:'uppercase',letterSpacing:1,fontWeight:700,marginBottom:3}}>📁 Pendente</div>
           <div style={{fontSize:13,fontWeight:700,color:'#e2e8f0',lineHeight:1.3}}>{s.pendente.n}</div>
           <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>
-            ID #{s.pendente.i} • 📍 {s.cidadePendente} • {s.vendasPendente} venda{s.vendasPendente===1?'':'s'} • {fmt(s.totalPendente)}
+            ID #{s.pendente.i} • {s.vendasPendente} venda{s.vendasPendente===1?'':'s'} • {fmt(s.totalPendente)}
           </div>
         </div>
         
