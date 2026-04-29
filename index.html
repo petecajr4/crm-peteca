@@ -90,6 +90,7 @@ function CRMPeteca() {
   const [anotacoes, setAnotacoes] = useState({});
   const [novoContato, setNovoContato] = useState({tipo:"telefone", vendedor:"", obs:""});
   const ANOTACOES_STORAGE = "peteca_anotacoes_clientes";
+  const ALIAS_STORAGE = "peteca_alias_clientes";  // v6: mapa { idPendente: idReal } pra mesclagem virtual
   const METAS_STORAGE = "peteca_metas";
   const [metasConfig, setMetasConfig] = useState({});
   const [metasMesAtual, setMetasMesAtual] = useState(() => {
@@ -98,6 +99,8 @@ function CRMPeteca() {
   });
   const [metasEditando, setMetasEditando] = useState(false);
   const [showIdeManager, setShowIdeManager] = useState(false);
+  const [aliasClientes, setAliasClientes] = useState({}); // {idPendente: idReal}
+  const [showMergeManager, setShowMergeManager] = useState(false);
   const [ideAction, setIdeAction] = useState(null);
   const [newIdeName, setNewIdeName] = useState("");
   const [selectedForIde, setSelectedForIde] = useState([]);
@@ -997,6 +1000,7 @@ function CRMPeteca() {
     loadVendas();
     loadAnotacoes();
     loadMetas();
+    loadAlias();
   }, []);
 
   // v2: Keyboard shortcuts globais (Cmd+K, 1-9 tabs, ESC)
@@ -1037,6 +1041,21 @@ function CRMPeteca() {
         if (data && typeof data === 'object') setAnotacoes(data);
       }
     } catch(e) {}
+  };
+  
+  // v6: Carregar/salvar alias de clientes (mesclagens)
+  const loadAlias = async () => {
+    try {
+      const result = await window.storage.get(ALIAS_STORAGE);
+      if (result && result.value) {
+        const data = JSON.parse(result.value);
+        if (data && typeof data === 'object') setAliasClientes(data);
+      }
+    } catch(e) {}
+  };
+  const salvarAlias = async (novoMapa) => {
+    setAliasClientes(novoMapa);
+    try { await window.storage.set(ALIAS_STORAGE, JSON.stringify(novoMapa)); } catch(e) {}
   };
   
   const loadMetas = async () => {
@@ -1188,6 +1207,25 @@ function CRMPeteca() {
     };
   }, [mods]);
 
+  // v6: Helper — resolve ID de cliente via alias (se foi mesclado, retorna o alvo)
+  const resolveAlias = useCallback((clienteId) => {
+    if (!clienteId) return clienteId;
+    const idStr = String(clienteId);
+    // Resolve em cadeia (alias->alias->final), com proteção contra loop
+    let current = idStr;
+    for (let i = 0; i < 5; i++) {
+      const next = aliasClientes[current];
+      if (!next || String(next) === current) break;
+      current = String(next);
+    }
+    return current;
+  }, [aliasClientes]);
+  
+  // v6: Set de IDs que são "alias source" (foram mesclados em outro) — pra filtrar da listagem
+  const aliasSourceIds = useMemo(() => {
+    return new Set(Object.keys(aliasClientes).map(String));
+  }, [aliasClientes]);
+
   // v3 FIX: set global de IDs inativos (aplicar mods) — usado em todas as abas para filtrar vendas
   const inativosIds = useMemo(() => {
     const s = new Set();
@@ -1217,6 +1255,9 @@ function CRMPeteca() {
   const filtered = useMemo(() => {
     let list = clientes.map(c => getClientData(c));
     
+    // v6: ocultar clientes que foram mesclados (aliasSource)
+    list = list.filter(c => !aliasSourceIds.has(String(c.i)));
+    
     if (statusFiltro === "ATIVOS") list = list.filter(c => c.a === 1 && c.c !== "CADASTRO PENDENTE");
     else if (statusFiltro === "INATIVOS") list = list.filter(c => c.a === 0);
     else if (statusFiltro === "PENDENTES") list = list.filter(c => c.c === "CADASTRO PENDENTE");
@@ -1238,7 +1279,7 @@ function CRMPeteca() {
     }
     
     return list;
-  }, [clientes, mods, search, cidadeFiltro, ideFiltro, statusFiltro, getClientData]);
+  }, [clientes, mods, search, cidadeFiltro, ideFiltro, statusFiltro, getClientData, aliasSourceIds]);
 
   const paged = useMemo(() => {
     const start = page * PAGE_SIZE;
@@ -1923,7 +1964,10 @@ function CRMPeteca() {
             if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
           });
           // v3 FIX: filtrar vendas de clientes inativados
-          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
+          // v6: aplica alias e filtra inativos
+          const allSales = allSalesRaw
+            .map(v => v.clienteId && aliasClientes[String(v.clienteId)] ? {...v, clienteId: resolveAlias(v.clienteId)} : v)
+            .filter(v => !inativosIds.has(v.clienteId));
           
           const anos = [...new Set(allSales.map(v => v.data?.slice(0,4)).filter(Boolean))].sort();
           const anosFiltrados = anosSelecionados.length > 0 ? anosSelecionados : anos;
@@ -2359,7 +2403,10 @@ function CRMPeteca() {
             if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
           });
           // v3 FIX: filtrar vendas de clientes inativados
-          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
+          // v6: aplica alias e filtra inativos
+          const allSales = allSalesRaw
+            .map(v => v.clienteId && aliasClientes[String(v.clienteId)] ? {...v, clienteId: resolveAlias(v.clienteId)} : v)
+            .filter(v => !inativosIds.has(v.clienteId));
           
           // Mapa ID cliente → cidade
           const clienteToCidade = {};
@@ -2777,7 +2824,10 @@ function CRMPeteca() {
             if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
           });
           // v3 FIX: filtrar vendas de clientes inativados
-          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
+          // v6: aplica alias e filtra inativos
+          const allSales = allSalesRaw
+            .map(v => v.clienteId && aliasClientes[String(v.clienteId)] ? {...v, clienteId: resolveAlias(v.clienteId)} : v)
+            .filter(v => !inativosIds.has(v.clienteId));
           
           const clienteToCidade = {};
           const clienteToNome = {};
@@ -3482,7 +3532,10 @@ function CRMPeteca() {
             if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
           });
           // v3 FIX: filtrar vendas de clientes inativados
-          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
+          // v6: aplica alias e filtra inativos
+          const allSales = allSalesRaw
+            .map(v => v.clienteId && aliasClientes[String(v.clienteId)] ? {...v, clienteId: resolveAlias(v.clienteId)} : v)
+            .filter(v => !inativosIds.has(v.clienteId));
           
           const clienteToCidade = {};
           const clienteToNome = {};
@@ -3956,7 +4009,10 @@ function CRMPeteca() {
             if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
           });
           // v3 FIX: filtrar vendas de clientes inativados
-          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
+          // v6: aplica alias e filtra inativos
+          const allSales = allSalesRaw
+            .map(v => v.clienteId && aliasClientes[String(v.clienteId)] ? {...v, clienteId: resolveAlias(v.clienteId)} : v)
+            .filter(v => !inativosIds.has(v.clienteId));
 
           const clienteToCidade = {};
           const clienteToNome = {};
@@ -4568,7 +4624,10 @@ function CRMPeteca() {
             if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
           });
           // v3 FIX: filtrar vendas de clientes inativados
-          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
+          // v6: aplica alias e filtra inativos
+          const allSales = allSalesRaw
+            .map(v => v.clienteId && aliasClientes[String(v.clienteId)] ? {...v, clienteId: resolveAlias(v.clienteId)} : v)
+            .filter(v => !inativosIds.has(v.clienteId));
 
           // v3 FIX: aplicar mods (inativação) nos clientes
           const clientesComMods = clientes.map(c => getClientData(c));
@@ -5322,7 +5381,10 @@ function CRMPeteca() {
             if (Array.isArray(arr)) arr.forEach(v => allSalesRaw.push(v));
           });
           // v3 FIX: filtrar vendas de clientes inativados
-          const allSales = allSalesRaw.filter(v => !inativosIds.has(v.clienteId));
+          // v6: aplica alias e filtra inativos
+          const allSales = allSalesRaw
+            .map(v => v.clienteId && aliasClientes[String(v.clienteId)] ? {...v, clienteId: resolveAlias(v.clienteId)} : v)
+            .filter(v => !inativosIds.has(v.clienteId));
           
           if (allSales.length === 0) {
             return (
@@ -6076,6 +6138,15 @@ function CRMPeteca() {
                   padding:"10px 16px",background:"linear-gradient(135deg,#7c3aed,#6d28d9)",
                   border:"none",borderRadius:8,color:"#fff",fontSize:12,fontWeight:600,cursor:"pointer"
                 }}>🔗 Gerenciar IDE</button>
+                <button onClick={() => setShowMergeManager(true)} style={{
+                  padding:"10px 16px",background:"linear-gradient(135deg,#a855f7,#ec4899)",
+                  border:"none",borderRadius:8,color:"#fff",fontSize:12,fontWeight:600,cursor:"pointer",
+                  display:"flex",alignItems:"center",gap:6
+                }}>🔗 Mesclar Pendentes
+                  {Object.keys(aliasClientes).length > 0 && (
+                    <span style={{background:"rgba(0,0,0,0.3)",padding:"1px 6px",borderRadius:8,fontSize:10,fontWeight:700}}>{Object.keys(aliasClientes).length}</span>
+                  )}
+                </button>
               </div>
             </div>
 
@@ -6593,6 +6664,18 @@ function CRMPeteca() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* MODAL: Mesclar Pendentes (v6) */}
+      {showMergeManager && (
+        <MergeManagerModal
+          onClose={() => setShowMergeManager(false)}
+          clientes={clientes}
+          vendas={vendas}
+          aliasClientes={aliasClientes}
+          salvarAlias={salvarAlias}
+          showToast={showToast}
+        />
       )}
 
       {/* MODAL: Gerenciar IDE */}
@@ -8328,6 +8411,291 @@ function AdminLoginModal({ onClose, onLogin, callKanbanAPI }) {
 // ============================================================
 // MODAL GERENCIAR TAGS (admin)
 // ============================================================
+// ============================================================
+// MERGE MANAGER — Detecta e mescla clientes pendentes com cadastros reais
+// ============================================================
+function MergeManagerModal({ onClose, clientes, vendas, aliasClientes, salvarAlias, showToast }) {
+  const [pendentesIgnorados, setPendentesIgnorados] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('peteca_merge_ignorados') || '[]'); } catch(e) { return []; }
+  });
+  const [executando, setExecutando] = useState(false);
+  
+  // Helper: similaridade de strings (Levenshtein simplificado, normalizada 0-100)
+  const similaridade = useCallback((a, b) => {
+    const s1 = String(a||'').toUpperCase().trim().replace(/\s+/g,' ');
+    const s2 = String(b||'').toUpperCase().trim().replace(/\s+/g,' ');
+    if (!s1 || !s2) return 0;
+    if (s1 === s2) return 100;
+    
+    // Match parcial: um contém o outro
+    if (s1.includes(s2) || s2.includes(s1)) {
+      const ratio = Math.min(s1.length, s2.length) / Math.max(s1.length, s2.length);
+      return Math.round(70 + ratio * 25); // 70-95%
+    }
+    
+    // Calcula primeiras palavras (sobrenome principal)
+    const w1 = s1.split(' ').filter(Boolean);
+    const w2 = s2.split(' ').filter(Boolean);
+    
+    // Match de primeira palavra (sobrenome do cliente)
+    if (w1[0] && w2[0] && w1[0] === w2[0] && w1[0].length >= 4) {
+      // Conta quantas palavras coincidem em qualquer posição
+      const comum = w1.filter(w => w2.includes(w) && w.length >= 3).length;
+      const total = Math.max(w1.length, w2.length);
+      const ratio = comum / total;
+      return Math.round(50 + ratio * 40); // 50-90%
+    }
+    
+    return 0;
+  }, []);
+  
+  // Calcular cidade da última venda de cada cliente
+  const cidadeVendasMap = useMemo(() => {
+    const m = {};
+    Object.values(vendas).forEach(arr => {
+      if (!Array.isArray(arr)) return;
+      arr.forEach(v => {
+        if (v.clienteId && v.cidade) {
+          // Mantém a mais recente
+          const id = String(v.clienteId);
+          if (!m[id] || (v.data && v.data > m[id].data)) {
+            m[id] = { cidade: v.cidade, data: v.data };
+          }
+        }
+      });
+    });
+    const result = {};
+    Object.keys(m).forEach(id => { result[id] = m[id].cidade; });
+    return result;
+  }, [vendas]);
+  
+  // Detectar sugestões de mesclagem
+  const sugestoes = useMemo(() => {
+    // Pendentes que não foram ignorados nem já mesclados
+    const ignoradosSet = new Set(pendentesIgnorados.map(String));
+    const aliasSet = new Set(Object.keys(aliasClientes).map(String));
+    
+    const pendentes = clientes.filter(c => 
+      c.c === "CADASTRO PENDENTE" && 
+      !ignoradosSet.has(String(c.i)) &&
+      !aliasSet.has(String(c.i))
+    );
+    
+    // Reais (não pendentes, não inativos)
+    const reais = clientes.filter(c => 
+      c.c !== "CADASTRO PENDENTE" && 
+      c.a !== 0
+    );
+    
+    const result = [];
+    pendentes.forEach(p => {
+      // Cidade do pendente (vem das vendas, não do cadastro)
+      const cidadePendente = cidadeVendasMap[String(p.i)] || '—';
+      
+      // Procura matches
+      const candidatos = [];
+      reais.forEach(r => {
+        // FILTRO 1: cidade DEVE bater
+        if (r.c !== cidadePendente) return;
+        
+        const score = similaridade(p.n, r.n);
+        if (score >= 70) {
+          candidatos.push({ real: r, score });
+        }
+      });
+      
+      if (candidatos.length === 0) return;
+      
+      // Ordena por maior score
+      candidatos.sort((a, b) => b.score - a.score);
+      const melhor = candidatos[0];
+      
+      // Calcula stats do pendente
+      let vendasPendente = 0, totalPendente = 0;
+      Object.values(vendas).forEach(arr => {
+        if (!Array.isArray(arr)) return;
+        arr.forEach(v => {
+          if (String(v.clienteId) === String(p.i)) {
+            vendasPendente++;
+            totalPendente += v.valorLiquido || 0;
+          }
+        });
+      });
+      
+      result.push({
+        pendente: p,
+        cidadePendente,
+        candidato: melhor.real,
+        score: melhor.score,
+        vendasPendente,
+        totalPendente,
+        outrosCandidatos: candidatos.slice(1, 4) // até 3 alternativas
+      });
+    });
+    
+    // Ordena: 100% primeiro, depois por score desc
+    result.sort((a, b) => b.score - a.score);
+    return result;
+  }, [clientes, vendas, aliasClientes, pendentesIgnorados, cidadeVendasMap, similaridade]);
+  
+  const ignorarSugestao = (id) => {
+    const novos = [...pendentesIgnorados, String(id)];
+    setPendentesIgnorados(novos);
+    try { localStorage.setItem('peteca_merge_ignorados', JSON.stringify(novos)); } catch(e) {}
+  };
+  
+  const aceitarMesclagem = async (idPendente, idReal, nome) => {
+    const novoAlias = { ...aliasClientes, [String(idPendente)]: String(idReal) };
+    await salvarAlias(novoAlias);
+    showToast(`✓ "${nome}" mesclado!`);
+  };
+  
+  const aceitarTodos100 = async () => {
+    setExecutando(true);
+    const novoAlias = { ...aliasClientes };
+    let count = 0;
+    sugestoes.forEach(s => {
+      if (s.score === 100) {
+        novoAlias[String(s.pendente.i)] = String(s.candidato.i);
+        count++;
+      }
+    });
+    await salvarAlias(novoAlias);
+    setExecutando(false);
+    showToast(`✓ ${count} mesclagens 100% aplicadas!`);
+  };
+  
+  const desfazerTodas = async () => {
+    if (!window.confirm('Desfazer TODAS as mesclagens? Isso não pode ser revertido por essa tela.')) return;
+    await salvarAlias({});
+    showToast('Todas mesclagens desfeitas');
+  };
+  
+  const sug100 = sugestoes.filter(s => s.score === 100);
+  const sugParcial = sugestoes.filter(s => s.score < 100);
+  const totalAlias = Object.keys(aliasClientes).length;
+  
+  return (
+    <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',backdropFilter:'blur(6px)',zIndex:1400,display:'flex',alignItems:'flex-start',justifyContent:'center',padding:20,overflowY:'auto',animation:'fadeIn .2s'}}>
+      <div onClick={e => e.stopPropagation()} style={{width:'100%',maxWidth:900,marginTop:20,marginBottom:40,background:'rgba(13,21,38,0.95)',backdropFilter:'blur(20px) saturate(180%)',border:'1px solid rgba(168,85,247,0.3)',borderRadius:16,boxShadow:'0 20px 60px rgba(0,0,0,0.5)',animation:'scaleIn .25s'}}>
+        <div style={{padding:'18px 22px',borderBottom:'1px solid rgba(168,85,247,0.15)',background:'linear-gradient(135deg,rgba(168,85,247,0.1),rgba(99,102,241,0.05))',position:'sticky',top:0,borderRadius:'16px 16px 0 0',zIndex:5}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+            <div>
+              <div style={{fontSize:16,fontWeight:800,color:'#e2e8f0',display:'flex',alignItems:'center',gap:8}}>🔗 Mesclar Clientes Duplicados</div>
+              <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>
+                {sugestoes.length === 0 
+                  ? 'Nenhuma sugestão encontrada' 
+                  : `${sug100.length} match${sug100.length===1?'':'es'} 100% • ${sugParcial.length} parcial${sugParcial.length===1?'':'is'}`}
+                {totalAlias > 0 && <span> • {totalAlias} já mesclado{totalAlias===1?'':'s'}</span>}
+              </div>
+            </div>
+            <button onClick={onClose} style={{width:32,height:32,borderRadius:8,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#94a3b8',fontSize:16,fontWeight:700,cursor:'pointer'}}>✕</button>
+          </div>
+        </div>
+        
+        <div style={{padding:22}}>
+          {sugestoes.length === 0 ? (
+            <div style={{padding:40,textAlign:'center'}}>
+              <div style={{fontSize:48,marginBottom:14}}>✨</div>
+              <div style={{fontSize:14,fontWeight:700,marginBottom:6,color:'#e2e8f0'}}>Tudo limpo!</div>
+              <div style={{fontSize:12,color:'#94a3b8',lineHeight:1.5}}>
+                Nenhum cadastro pendente com correspondência detectada.<br/>
+                {totalAlias > 0 && <span style={{color:'#86efac'}}>{totalAlias} mesclagem{totalAlias===1?'':'s'} ativa{totalAlias===1?'':'s'}.</span>}
+              </div>
+              {totalAlias > 0 && (
+                <button onClick={desfazerTodas} style={{marginTop:14,padding:'8px 18px',background:'rgba(220,38,38,0.1)',border:'1px solid rgba(220,38,38,0.3)',borderRadius:8,color:'#fca5a5',fontSize:12,fontWeight:600,cursor:'pointer'}}>↻ Desfazer todas mesclagens</button>
+              )}
+            </div>
+          ) : (
+            <>
+              {sug100.length > 0 && (
+                <div style={{marginBottom:20}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                    <div style={{fontSize:11,color:'#86efac',textTransform:'uppercase',letterSpacing:1,fontWeight:700}}>
+                      ✓ Match 100% — Pode aceitar todos
+                    </div>
+                    <button onClick={aceitarTodos100} disabled={executando} style={{padding:'6px 12px',background:'linear-gradient(135deg,#16a34a,#22c55e)',border:'none',borderRadius:6,color:'#fff',fontSize:11,fontWeight:700,cursor:'pointer'}}>
+                      {executando ? 'Aplicando...' : `✓ Aceitar todos os ${sug100.length}`}
+                    </button>
+                  </div>
+                  <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                    {sug100.map(s => (
+                      <SugestaoLinha key={s.pendente.i} s={s} onAceitar={aceitarMesclagem} onIgnorar={ignorarSugestao}/>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {sugParcial.length > 0 && (
+                <div>
+                  <div style={{fontSize:11,color:'#fdba74',textTransform:'uppercase',letterSpacing:1,fontWeight:700,marginBottom:10}}>
+                    ⚠ Match parcial — Verifique antes de aceitar
+                  </div>
+                  <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                    {sugParcial.map(s => (
+                      <SugestaoLinha key={s.pendente.i} s={s} onAceitar={aceitarMesclagem} onIgnorar={ignorarSugestao}/>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {totalAlias > 0 && (
+                <div style={{marginTop:20,padding:14,background:'rgba(34,197,94,0.05)',border:'1px solid rgba(34,197,94,0.2)',borderRadius:10,display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+                  <div style={{fontSize:12,color:'#86efac'}}>
+                    ✓ {totalAlias} mesclagem{totalAlias===1?'':'s'} ativa{totalAlias===1?'':'s'}
+                  </div>
+                  <button onClick={desfazerTodas} style={{padding:'6px 12px',background:'rgba(220,38,38,0.1)',border:'1px solid rgba(220,38,38,0.3)',borderRadius:6,color:'#fca5a5',fontSize:11,fontWeight:600,cursor:'pointer'}}>↻ Desfazer todas</button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SugestaoLinha({ s, onAceitar, onIgnorar }) {
+  const fmt = n => 'R$ ' + Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2});
+  const corScore = s.score === 100 ? '#22c55e' : s.score >= 90 ? '#84cc16' : s.score >= 80 ? '#eab308' : '#fb923c';
+  
+  return (
+    <div style={{padding:'12px 14px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.05)',borderRadius:10}}>
+      <div style={{display:'flex',alignItems:'center',gap:14,flexWrap:'wrap'}}>
+        {/* Pendente */}
+        <div style={{flex:'1 1 250px',minWidth:200}}>
+          <div style={{fontSize:9,color:'#fca5a5',textTransform:'uppercase',letterSpacing:1,fontWeight:700,marginBottom:3}}>📁 Pendente</div>
+          <div style={{fontSize:13,fontWeight:700,color:'#e2e8f0',lineHeight:1.3}}>{s.pendente.n}</div>
+          <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>
+            ID #{s.pendente.i} • 📍 {s.cidadePendente} • {s.vendasPendente} venda{s.vendasPendente===1?'':'s'} • {fmt(s.totalPendente)}
+          </div>
+        </div>
+        
+        {/* Seta */}
+        <div style={{fontSize:20,color:corScore,flexShrink:0}}>→</div>
+        
+        {/* Real */}
+        <div style={{flex:'1 1 250px',minWidth:200}}>
+          <div style={{fontSize:9,color:'#86efac',textTransform:'uppercase',letterSpacing:1,fontWeight:700,marginBottom:3,display:'flex',alignItems:'center',gap:6}}>
+            <span>✓ Cliente Real</span>
+            <span style={{padding:'1px 6px',borderRadius:8,background:`${corScore}33`,color:corScore,fontSize:9,border:`1px solid ${corScore}`}}>{s.score}%</span>
+          </div>
+          <div style={{fontSize:13,fontWeight:700,color:'#e2e8f0',lineHeight:1.3}}>{s.candidato.n}</div>
+          <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>
+            ID #{s.candidato.i} • 📍 {s.candidato.c}{s.candidato.b ? ' • ' + s.candidato.b : ''}
+          </div>
+        </div>
+        
+        {/* Ações */}
+        <div style={{display:'flex',gap:6,flexShrink:0}}>
+          <button onClick={() => onAceitar(s.pendente.i, s.candidato.i, s.pendente.n)} style={{padding:'8px 14px',background:'linear-gradient(135deg,#16a34a,#22c55e)',border:'none',borderRadius:8,color:'#fff',fontSize:11,fontWeight:700,cursor:'pointer',boxShadow:'0 2px 8px rgba(34,197,94,0.3)'}}>✓ Aceitar</button>
+          <button onClick={() => onIgnorar(s.pendente.i)} style={{padding:'8px 12px',background:'rgba(255,255,255,0.04)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:8,color:'#94a3b8',fontSize:11,fontWeight:600,cursor:'pointer'}}>✗ Ignorar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GerenciarTagsModal({ onClose, onReload, showToast }) {
   const [tags, setTags] = useState([]);
   const [loading, setLoading] = useState(true);
