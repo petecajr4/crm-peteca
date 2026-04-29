@@ -8516,6 +8516,18 @@ function MergeManagerModal({ onClose, clientes, vendas, aliasClientes, salvarAli
         });
       });
       
+      // v6: Calcula stats do cliente real (transparência)
+      let vendasReal = 0, totalReal = 0;
+      Object.values(vendas).forEach(arr => {
+        if (!Array.isArray(arr)) return;
+        arr.forEach(v => {
+          if (String(v.clienteId) === String(melhor.real.i)) {
+            vendasReal++;
+            totalReal += v.valorLiquido || 0;
+          }
+        });
+      });
+      
       result.push({
         pendente: p,
         cidadePendente: 'Pendente',
@@ -8523,7 +8535,9 @@ function MergeManagerModal({ onClose, clientes, vendas, aliasClientes, salvarAli
         score: melhor.score,
         vendasPendente,
         totalPendente,
-        outrosCandidatos: candidatos.slice(1, 4) // até 3 alternativas
+        vendasReal,
+        totalReal,
+        outrosCandidatos: candidatos.slice(1, 4)
       });
     });
     
@@ -8677,6 +8691,11 @@ function SugestaoLinha({ s, onAceitar, onIgnorar }) {
           <div style={{fontSize:13,fontWeight:700,color:'#e2e8f0',lineHeight:1.3}}>{s.candidato.n}</div>
           <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>
             ID #{s.candidato.i} • 📍 {s.candidato.c}{s.candidato.b ? ' • ' + s.candidato.b : ''}
+          </div>
+          <div style={{fontSize:10,color: s.vendasReal > 0 ? '#fbbf24' : '#64748b',marginTop:3,fontWeight: s.vendasReal > 0 ? 600 : 400}}>
+            {s.vendasReal === 0 
+              ? '🔹 Sem vendas próprias (esqueleto de cadastro)' 
+              : `📊 Já tem ${s.vendasReal} venda${s.vendasReal===1?'':'s'} • ${fmt(s.totalReal)}`}
           </div>
         </div>
         
