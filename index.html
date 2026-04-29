@@ -1203,6 +1203,12 @@ function CRMPeteca() {
       ...client,
       a: mod.a !== undefined ? mod.a : client.a,
       d: mod.d !== undefined ? mod.d : client.d,
+      // v6: aplicar edições de cadastro (cidade, bairro, rua, número, nome)
+      c: mod.c !== undefined && mod.c !== '' ? mod.c : client.c,
+      b: mod.b !== undefined ? mod.b : client.b,
+      r: mod.r !== undefined ? mod.r : client.r,
+      nu: mod.nu !== undefined ? mod.nu : client.nu,
+      n: mod.n !== undefined && mod.n !== '' ? mod.n : client.n,
       notes: mod.notes || ""
     };
   }, [mods]);
@@ -6555,6 +6561,11 @@ function CRMPeteca() {
             {/* Edição de dados */}
             <div style={{background:"#0a1220",borderRadius:10,padding:16,marginBottom:16}}>
               <div style={{fontSize:12,fontWeight:600,color:"#60a5fa",marginBottom:12}}>✏️ Dados do Cliente</div>
+              <div style={{marginBottom:10}}>
+                <label style={{fontSize:10,color:"#5a7a9a",display:"block",marginBottom:3}}>NOME / RAZÃO SOCIAL</label>
+                <input value={selectedClient.n || ""} onChange={e => setSelectedClient({...selectedClient, n: e.target.value.toUpperCase()})}
+                  style={{width:"100%",padding:"8px 10px",background:"#111c30",border:"1px solid #1e3050",borderRadius:6,color:"#e2e8f0",fontSize:13}}/>
+              </div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
                 <div>
                   <label style={{fontSize:10,color:"#5a7a9a",display:"block",marginBottom:3}}>CIDADE</label>
@@ -6580,6 +6591,7 @@ function CRMPeteca() {
               <button onClick={() => {
                 const newMods = {...mods};
                 if (!newMods[selectedClient.i]) newMods[selectedClient.i] = {};
+                newMods[selectedClient.i].n = selectedClient.n;
                 newMods[selectedClient.i].c = selectedClient.c;
                 newMods[selectedClient.i].b = selectedClient.b;
                 newMods[selectedClient.i].r = selectedClient.r;
