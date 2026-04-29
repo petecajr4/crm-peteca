@@ -7313,6 +7313,7 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
   const particlesRef = useRef({});
   const draggingRef = useRef(null);
   const [, setTick] = useState(0);
+  const [hoveredId, setHoveredId] = useState(null);
   
   // Grupos por cidade para linhas (sempre visíveis) — mapa cidade -> array de ids
   const gruposCidade = useMemo(() => {
@@ -7330,9 +7331,24 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
         let hash = 0;
         for (let c = 0; c < cidade.length; c++) hash = ((hash << 5) - hash) + cidade.charCodeAt(c);
         const hue = Math.abs(hash) % 360;
-        return { cidade, ids, cor: `hsl(${hue}, 60%, 65%)` };
+        return { cidade, ids, cor: `hsl(${hue}, 70%, 65%)` };
       });
   }, [kanbans]);
+  
+  // Mapa id -> grupo (lookup rápido pra renderização da aura)
+  const idToGrupo = useMemo(() => {
+    const m = {};
+    gruposCidade.forEach(g => {
+      g.ids.forEach(id => { m[id] = g; });
+    });
+    return m;
+  }, [gruposCidade]);
+  
+  // Quando filtra cidade, desativa as auras (todos seriam da mesma cidade = redundante)
+  const aurasDesativadas = !!cidadeDestacada;
+  
+  // Cidade da bolinha hover (pra acender linhas)
+  const hoveredGrupo = hoveredId ? idToGrupo[hoveredId] : null;
   
   const STATUS_CORES = {
     aberto:  { cor: '#60a5fa', corEscura: '#2563eb' },
@@ -7525,31 +7541,36 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
       <div style={{position:'absolute',left:0,right:0,top:'70%',height:1,background:'linear-gradient(90deg, transparent, rgba(107,114,128,0.2), transparent)',pointerEvents:'none'}}></div>
       <div style={{position:'absolute',left:14,top:'calc(70% + 8px)',fontSize:9,color:'rgba(107,114,128,0.5)',letterSpacing:2,textTransform:'uppercase',fontWeight:600,pointerEvents:'none'}}>⚫ Perdidos</div>
       
-      {/* SVG com linhas conectando bolinhas da mesma cidade (sempre visíveis) */}
-      {gruposCidade.length > 0 && (
+      {/* SVG com linhas: só aparecem ao passar mouse numa bolinha (hover) */}
+      {hoveredGrupo && hoveredGrupo.ids.length >= 2 && !aurasDesativadas && (
         <svg style={{position:'absolute',inset:0,width:'100%',height:'100%',pointerEvents:'none',zIndex:1}}>
-          {gruposCidade.flatMap(grupo => {
+          <defs>
+            <filter id="line-glow" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="2" result="blur"/>
+              <feMerge>
+                <feMergeNode in="blur"/>
+                <feMergeNode in="SourceGraphic"/>
+              </feMerge>
+            </filter>
+          </defs>
+          {(() => {
             const pares = [];
-            for (let i = 0; i < grupo.ids.length; i++) {
-              for (let j = i+1; j < grupo.ids.length; j++) {
-                const a = particlesRef.current[grupo.ids[i]];
-                const b = particlesRef.current[grupo.ids[j]];
-                if (a && b) pares.push({a, b, key: grupo.ids[i]+'_'+grupo.ids[j], cor: grupo.cor, cidade: grupo.cidade});
+            for (let i = 0; i < hoveredGrupo.ids.length; i++) {
+              for (let j = i+1; j < hoveredGrupo.ids.length; j++) {
+                const a = particlesRef.current[hoveredGrupo.ids[i]];
+                const b = particlesRef.current[hoveredGrupo.ids[j]];
+                if (a && b) pares.push({a, b, key: hoveredGrupo.ids[i]+'_'+hoveredGrupo.ids[j]});
               }
             }
-            return pares;
-          }).map(({a, b, key, cor, cidade}) => {
-            // Destacar se o grupo dessa cidade está sendo arrastado
-            const isHighlight = cidadeDestacada === cidade;
-            return (
+            return pares.map(({a, b, key}) => (
               <line key={key} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-                stroke={cor} 
-                strokeWidth={isHighlight ? 1.8 : 1}
-                strokeDasharray={isHighlight ? "none" : "4 5"}
-                strokeOpacity={isHighlight ? 0.7 : 0.35}
-                style={{transition:"stroke-opacity .2s, stroke-width .2s"}}/>
-            );
-          })}
+                stroke={hoveredGrupo.cor}
+                strokeWidth="1.5"
+                strokeOpacity="0.7"
+                filter="url(#line-glow)"
+                style={{animation:"pulse 1.5s ease-in-out infinite"}}/>
+            ));
+          })()}
         </svg>
       )}
       
@@ -7592,25 +7613,55 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
         const size = p.r * 2;
         const fontSize = Math.max(9, Math.min(14, size * 0.14));
         const shortName = k.cliente_nome.length > 20 && size < 80 ? k.cliente_nome.slice(0,18)+'…' : k.cliente_nome;
+        
+        // v4: aura/halo da cidade
+        const grupoDaCidade = idToGrupo[k.id];
+        const temAura = grupoDaCidade && !aurasDesativadas;
+        
+        // v4: lógica de hover (acende irmãs, escurece outros)
+        const isHovered = hoveredId === k.id;
+        const isIrma = hoveredGrupo && grupoDaCidade && hoveredGrupo.cidade === grupoDaCidade.cidade && !isHovered;
+        const isOutraCidade = hoveredId && !isHovered && !isIrma;
+        
+        // Glow/halo
+        let boxShadow = `0 4px 20px ${s.cor}55, inset 0 2px 8px rgba(255,255,255,0.2), inset 0 -4px 10px rgba(0,0,0,0.15)`;
+        if (temAura) {
+          // Halo difuso na cor da cidade
+          boxShadow = `0 0 0 3px ${grupoDaCidade.cor}33, 0 0 18px 4px ${grupoDaCidade.cor}55, ${boxShadow}`;
+        }
+        if (isHovered) {
+          boxShadow = `0 0 0 4px ${grupoDaCidade ? grupoDaCidade.cor : s.cor}88, 0 0 30px 8px ${grupoDaCidade ? grupoDaCidade.cor : s.cor}aa, 0 8px 32px ${s.cor}88, inset 0 2px 8px rgba(255,255,255,0.3)`;
+        } else if (isIrma) {
+          boxShadow = `0 0 0 3px ${grupoDaCidade.cor}aa, 0 0 24px 6px ${grupoDaCidade.cor}88, 0 4px 20px ${s.cor}66`;
+        }
+        
+        // Opacidade
+        let opacity = k.status === 'perdido' ? 0.7 : 1;
+        if (isOutraCidade) opacity = 0.35;
+        
         return (
           <div
             key={k.id}
             className="bubble"
             onMouseDown={e => onMouseDown(e, k.id)}
             onMouseUp={() => onMouseUp(k.id)}
+            onMouseEnter={() => setHoveredId(k.id)}
+            onMouseLeave={() => setHoveredId(null)}
             style={{
               left: p.x - p.r, top: p.y - p.r, width: size, height: size,
               background: `radial-gradient(circle at 35% 30%, ${s.cor}ee, ${s.corEscura}dd)`,
               border: `1.5px solid ${s.cor}`,
-              boxShadow: `0 4px 20px ${s.cor}55, inset 0 2px 8px rgba(255,255,255,0.2), inset 0 -4px 10px rgba(0,0,0,0.15)`,
+              boxShadow: boxShadow,
               color: '#fff', fontSize: fontSize,
-              opacity: k.status === 'perdido' ? 0.7 : 1,
+              opacity: opacity,
               position: 'absolute', borderRadius: '50%',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               textAlign: 'center', cursor: 'grab', userSelect: 'none',
-              fontWeight: 700, padding: 6, overflow: 'hidden', lineHeight: 1.1
+              fontWeight: 700, padding: 6, overflow: 'hidden', lineHeight: 1.1,
+              transition: 'opacity .25s, box-shadow .25s',
+              zIndex: isHovered ? 30 : (isIrma ? 20 : 10)
             }}
-            title={`${k.cliente_nome} • ${k.vendedor}`}
+            title={`${k.cliente_nome} • ${k.vendedor}${grupoDaCidade ? ' • 📍 ' + grupoDaCidade.cidade : ''}`}
           >
             <span className="bubble-label" style={{fontSize:fontSize,fontWeight:700}}>{shortName}</span>
             {/* Nome do vendedor em selo pequeno */}
