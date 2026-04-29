@@ -7254,26 +7254,28 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
   const [, setTick] = useState(0);
   const [hoveredId, setHoveredId] = useState(null);
   
-  // v5: Big Bang — onda de choque visual ao iniciar arraste
-  const [bigBang, setBigBang] = useState(null); // {x, y, time, color}
+  // v5: Big Bangs — ondas de choque visuais (suporta múltiplas simultâneas)
+  const [bigBangs, setBigBangs] = useState([]); // array de {id, x, y, time, color}
   
   // v6: Banimento dramático — intrusos voam pra fora ao colidir
   const banidosRef = useRef({}); // id -> { phase, startTime, fromX, fromY, vx, vy, rot, rotSpeed, color, trail }
   // phase: 'flying' (saindo) | 'banned' (fora da tela) | 'returning' (voltando)
   const [, setBanidosRender] = useState(0); // força render quando banidos mudam
   
-  // Anima a onda do Big Bang (re-render contínuo enquanto ativa)
+  // Anima as ondas dos Big Bangs (re-render contínuo enquanto ativos)
   useEffect(() => {
-    if (!bigBang) return;
+    if (bigBangs.length === 0) return;
     let raf;
     const tick = () => {
       setTick(t => t + 1);
-      const elapsed = Date.now() - bigBang.time;
-      if (elapsed < 600) raf = requestAnimationFrame(tick);
+      const now = Date.now();
+      const ativos = bigBangs.filter(b => now - b.time < 600);
+      if (ativos.length > 0) raf = requestAnimationFrame(tick);
+      else setBigBangs([]);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [bigBang]);
+  }, [bigBangs]);
   
   // PALETA EXTREMA (12 cores muito distintas, sem conflito com status azul/verde/laranja/cinza)
   const PALETA_CIDADES = [
@@ -7472,38 +7474,46 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
         });
       }
       
-      // VÓRTEX + BANIMENTO: enquanto arrasta, repele E bani intrusos ao tocar
+      // VÓRTEX + BANIMENTO: enquanto arrasta, TODAS as irmãs ativas repelem e banem intrusos
       if (dragId) {
         const grupoArrastado = idToGrupo[dragId];
         if (grupoArrastado) {
-          const dragP = parts[dragId];
-          if (dragP) {
-            const RAIO_VORTEX = 250; // raio de influência (vórtex)
-            const FORCA_REPULSAO = 1.4;
-            const FORCA_ROTACAO = 0.5;
+          // Mapa de status pra excluir perdidas
+          const statusMap = {};
+          kanbans.forEach(k => { statusMap[k.id] = k.status; });
+          
+          // Irmãs ativas (incluindo a agarrada) — perdidas não participam
+          const irmasAtivas = grupoArrastado.ids.filter(iid => statusMap[iid] !== 'perdido');
+          
+          const RAIO_VORTEX = 250;
+          const FORCA_REPULSAO = 1.4;
+          const FORCA_ROTACAO = 0.5;
+          
+          ids.forEach(id => {
+            // Pula a agarrada e as próprias irmãs
+            const grupoBolinha = idToGrupo[id];
+            if (grupoBolinha && grupoBolinha.cidade === grupoArrastado.cidade) return;
+            // Já banido? Pula
+            if (banidosRef.current[id]) return;
             
-            ids.forEach(id => {
-              if (id === dragId) return;
-              const grupoBolinha = idToGrupo[id];
-              // Só afeta intrusos (de OUTRA cidade ou sem cidade)
-              if (grupoBolinha && grupoBolinha.cidade === grupoArrastado.cidade) return;
+            const intruso = parts[id];
+            if (!intruso) return;
+            
+            // Para cada irmã ativa, verifica se essa intrusa está colidindo ou sob vórtex
+            for (let k = 0; k < irmasAtivas.length; k++) {
+              const irmaId = irmasAtivas[k];
+              const irmaP = parts[irmaId];
+              if (!irmaP) continue;
               
-              // Já banido? Pula
-              if (banidosRef.current[id]) return;
-              
-              const intruso = parts[id];
-              if (!intruso) return;
-              
-              const dx = intruso.x - dragP.x;
-              const dy = intruso.y - dragP.y;
+              const dx = intruso.x - irmaP.x;
+              const dy = intruso.y - irmaP.y;
               const dist = Math.sqrt(dx*dx + dy*dy);
-              const distColisao = dragP.r + intruso.r + 4;
+              const distColisao = irmaP.r + intruso.r + 4;
               
-              // 💥 COLISÃO REAL — BANIR A INTRUSA
+              // 💥 COLISÃO REAL com QUALQUER irmã = BANIR
               if (dist < distColisao && dist > 0.1) {
                 const nx = dx/dist;
                 const ny = dy/dist;
-                // Velocidade absurdamente alta + componente tangencial pra espiral
                 const vForte = 28;
                 const vRot = 12;
                 banidosRef.current[id] = {
@@ -7512,18 +7522,17 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
                   vx: nx * vForte + (-ny) * vRot,
                   vy: ny * vForte + nx * vRot,
                   rot: 0,
-                  rotSpeed: (Math.random() - 0.5) * 0.4 + 0.2, // gira rápido
+                  rotSpeed: (Math.random() - 0.5) * 0.4 + 0.2,
                   color: grupoBolinha ? grupoBolinha.cor : '#94a3b8',
-                  trail: []
+                  trail: [],
+                  fromCenterX: irmaP.x,
+                  fromCenterY: irmaP.y
                 };
-                // Marca posição inicial pra fase de retorno saber de onde voltar
-                banidosRef.current[id].fromCenterX = dragP.x;
-                banidosRef.current[id].fromCenterY = dragP.y;
                 setBanidosRender(r => r + 1);
-                return;
+                return; // Sai do forEach desse intruso (já banido)
               }
               
-              // Caso contrário: vórtex normal (repulsão giratória)
+              // Vórtex normal de cada irmã (acumula força)
               if (dist < RAIO_VORTEX && dist > 1) {
                 const nx = dx/dist;
                 const ny = dy/dist;
@@ -7533,8 +7542,8 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
                 intruso.vx += -ny * FORCA_ROTACAO * intensidade;
                 intruso.vy += nx * FORCA_ROTACAO * intensidade;
               }
-            });
-          }
+            }
+          });
         }
       }
       
@@ -7600,36 +7609,64 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
     const grupoArrastado = idToGrupo[id];
     const cor = grupoArrastado ? grupoArrastado.cor : '#ffffff';
     
-    // Onda visual
-    setBigBang({ x: p.x, y: p.y, time: Date.now(), color: cor });
-    setTimeout(() => setBigBang(null), 600);
+    // Construir mapa rápido de status (perdidos não participam)
+    const statusMap = {};
+    kanbans.forEach(k => { statusMap[k.id] = k.status; });
     
-    // Arremesso físico nos intrusos (de outras cidades) próximos
+    // Identificar todas as irmãs ATIVAS (incluindo a agarrada) — só não-perdidas
+    let irmasAtivas = [id];
+    if (grupoArrastado) {
+      irmasAtivas = grupoArrastado.ids.filter(iid => statusMap[iid] !== 'perdido');
+      if (irmasAtivas.length === 0) irmasAtivas = [id]; // fallback
+    }
+    
+    // 💥 Dispara Big Bang VISUAL de cada irmã ativa
+    const novasOndas = [];
+    const now = Date.now();
+    irmasAtivas.forEach((irmaId, idx) => {
+      const irmaP = particlesRef.current[irmaId];
+      if (!irmaP) return;
+      novasOndas.push({
+        id: irmaId + '_' + now + '_' + idx,
+        x: irmaP.x,
+        y: irmaP.y,
+        time: now + idx * 30, // pequeno delay entre as ondas pra efeito cascata
+        color: cor
+      });
+    });
+    setBigBangs(novasOndas);
+    
+    // Arremesso físico: cada irmã ativa empurra os intrusos no seu raio
     if (grupoArrastado) {
       const RAIO_BANG = 350;
-      const FORCA_BANG = 18; // bem forte
+      const FORCA_BANG = 18;
       
+      // Para cada intruso, calcula força total somada de todas as irmãs
       Object.keys(particlesRef.current).forEach(otherId => {
-        if (otherId === id) return;
         const grupoOutro = idToGrupo[otherId];
-        // Só explode intrusos
+        // Pula se for da mesma cidade (não é intruso)
         if (grupoOutro && grupoOutro.cidade === grupoArrastado.cidade) return;
         
         const intruso = particlesRef.current[otherId];
         if (!intruso) return;
         
-        const dx = intruso.x - p.x;
-        const dy = intruso.y - p.y;
-        const dist = Math.sqrt(dx*dx + dy*dy);
-        
-        if (dist < RAIO_BANG && dist > 1) {
-          const nx = dx/dist;
-          const ny = dy/dist;
-          // Força inversamente proporcional à distância
-          const intensidade = Math.pow(1 - dist / RAIO_BANG, 2);
-          intruso.vx += nx * FORCA_BANG * intensidade;
-          intruso.vy += ny * FORCA_BANG * intensidade;
-        }
+        // Soma a contribuição de cada irmã ativa
+        irmasAtivas.forEach(irmaId => {
+          const irmaP = particlesRef.current[irmaId];
+          if (!irmaP) return;
+          
+          const dx = intruso.x - irmaP.x;
+          const dy = intruso.y - irmaP.y;
+          const dist = Math.sqrt(dx*dx + dy*dy);
+          
+          if (dist < RAIO_BANG && dist > 1) {
+            const nx = dx/dist;
+            const ny = dy/dist;
+            const intensidade = Math.pow(1 - dist / RAIO_BANG, 2);
+            intruso.vx += nx * FORCA_BANG * intensidade;
+            intruso.vy += ny * FORCA_BANG * intensidade;
+          }
+        });
       });
     }
   };
@@ -7726,29 +7763,30 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
       <div style={{position:'absolute',left:0,right:0,top:'70%',height:1,background:'linear-gradient(90deg, transparent, rgba(107,114,128,0.2), transparent)',pointerEvents:'none'}}></div>
       <div style={{position:'absolute',left:14,top:'calc(70% + 8px)',fontSize:9,color:'rgba(107,114,128,0.5)',letterSpacing:2,textTransform:'uppercase',fontWeight:600,pointerEvents:'none'}}>⚫ Perdidos</div>
       
-      {/* 💥 ONDA DE CHOQUE BIG BANG */}
-      {bigBang && (() => {
-        const elapsed = Date.now() - bigBang.time;
-        const progress = Math.min(elapsed / 600, 1); // 600ms duração
-        const raio = progress * 400; // expande até 400px
-        const opacity = 1 - progress; // fade out
+      {/* 💥 ONDAS DE CHOQUE BIG BANG (múltiplas simultâneas) */}
+      {bigBangs.map(bb => {
+        const elapsed = Date.now() - bb.time;
+        if (elapsed < 0 || elapsed > 600) return null; // ainda não começou ou já terminou
+        const progress = Math.min(elapsed / 600, 1);
+        const raio = progress * 400;
+        const opacity = 1 - progress;
         return (
-          <>
+          <React.Fragment key={bb.id}>
             {/* Anel principal */}
             <div style={{
               position:'absolute',
-              left: bigBang.x - raio,
-              top: bigBang.y - raio,
+              left: bb.x - raio,
+              top: bb.y - raio,
               width: raio * 2,
               height: raio * 2,
               borderRadius:'50%',
-              border: `${4 - progress * 3}px solid ${bigBang.color}`,
-              boxShadow: `0 0 ${40 * (1-progress)}px ${bigBang.color}, inset 0 0 ${30 * (1-progress)}px ${bigBang.color}88`,
+              border: `${4 - progress * 3}px solid ${bb.color}`,
+              boxShadow: `0 0 ${40 * (1-progress)}px ${bb.color}, inset 0 0 ${30 * (1-progress)}px ${bb.color}88`,
               opacity: opacity,
               pointerEvents:'none',
               zIndex: 5
             }}/>
-            {/* Anel secundário (delay) */}
+            {/* Anel secundário branco (delay) */}
             {elapsed > 50 && (() => {
               const elapsed2 = elapsed - 50;
               const progress2 = Math.min(elapsed2 / 550, 1);
@@ -7757,8 +7795,8 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
               return (
                 <div style={{
                   position:'absolute',
-                  left: bigBang.x - raio2,
-                  top: bigBang.y - raio2,
+                  left: bb.x - raio2,
+                  top: bb.y - raio2,
                   width: raio2 * 2,
                   height: raio2 * 2,
                   borderRadius:'50%',
@@ -7773,8 +7811,8 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
             {progress < 0.3 && (
               <div style={{
                 position:'absolute',
-                left: bigBang.x - 30,
-                top: bigBang.y - 30,
+                left: bb.x - 30,
+                top: bb.y - 30,
                 width: 60, height: 60,
                 borderRadius:'50%',
                 background: `radial-gradient(circle, #ffffff ${(1-progress*3)*100}%, transparent 100%)`,
@@ -7784,9 +7822,9 @@ function KanbanBolinhasAdmin({ kanbans, onSelectKanban, cidadeDestacada }) {
                 filter: 'blur(8px)'
               }}/>
             )}
-          </>
+          </React.Fragment>
         );
-      })()}
+      })}
 
       {/* 🌠 TRAIL DAS BANIDAS (rastro de cometa) */}
       {(() => {
