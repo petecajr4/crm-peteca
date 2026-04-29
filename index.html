@@ -6859,50 +6859,93 @@ function CRMPeteca() {
             })()}
 
             {/* ADICIONAR A GRUPO EXISTENTE */}
+            {/* ADICIONAR A GRUPO EXISTENTE */}
             {ideAction === "adicionar" && (
               <div style={{background:"#0a1220",borderRadius:10,padding:20,marginBottom:16}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-                  <div style={{fontSize:13,fontWeight:600,color:"#3b82f6"}}>Adicionar cliente a grupo existente</div>
-                  <button onClick={() => {setIdeAction(null);setNewIdeName("");setSearch("");}} style={{fontSize:11,color:"#5a7a9a",background:"none",border:"none",cursor:"pointer"}}>← Voltar</button>
+                  <div style={{fontSize:13,fontWeight:600,color:"#3b82f6"}}>Adicionar clientes a grupo existente</div>
+                  <button onClick={() => {setIdeAction(null);setNewIdeName("");setSearch("");setSelectedForIde([]);}} style={{fontSize:11,color:"#5a7a9a",background:"none",border:"none",cursor:"pointer"}}>← Voltar</button>
                 </div>
+                
+                <label style={{fontSize:10,color:"#5a7a9a",display:"block",marginBottom:4}}>Selecione o grupo</label>
                 <select onChange={e => setNewIdeName(e.target.value)} value={newIdeName}
                   style={{width:"100%",padding:"10px 14px",background:"#111c30",border:"1px solid #1e3050",borderRadius:8,color:"#e2e8f0",fontSize:13,marginBottom:12}}>
                   <option value="">Selecione o grupo...</option>
                   {ides.filter(i=>i!=="TODOS"&&i!=="COM_IDE"&&i!=="SEM_IDE").map(i => <option key={i} value={i}>{i} ({getIdeMembers(i).length} membros)</option>)}
                 </select>
+                
                 {newIdeName && (
                   <>
-                    <div style={{fontSize:11,color:"#5a7a9a",marginBottom:6}}>Membros atuais:</div>
-                    <div style={{marginBottom:12}}>
+                    <div style={{fontSize:11,color:"#5a7a9a",marginBottom:6}}>Membros atuais ({getIdeMembers(newIdeName).length}):</div>
+                    <div style={{marginBottom:12,maxHeight:80,overflowY:"auto"}}>
                       {getIdeMembers(newIdeName).map(m => (
                         <span key={m.i} style={{display:"inline-block",padding:"3px 8px",margin:"2px",background:"rgba(59,130,246,0.15)",borderRadius:4,fontSize:11,color:"#8899bb"}}>
                           {m.i} - {m.n} ({m.c})
                         </span>
                       ))}
                     </div>
-                    <input placeholder="Buscar cliente por nome, ID ou cidade..." value={search} onChange={e => setSearch(e.target.value)}
+                    
+                    <label style={{fontSize:10,color:"#5a7a9a",display:"block",marginBottom:4}}>Buscar clientes para adicionar ao grupo</label>
+                    <input placeholder="Nome, ID ou cidade..." value={search} onChange={e => setSearch(e.target.value)}
                       style={{width:"100%",padding:"8px 12px",background:"#111c30",border:"1px solid #1e3050",borderRadius:8,color:"#e2e8f0",fontSize:13,marginBottom:8}}/>
-                    <div style={{maxHeight:200,overflowY:"auto"}}>
+                    
+                    <div style={{maxHeight:200,overflowY:"auto",marginBottom:12}}>
                       {clientes.filter(c => {
                         const cd = getClientData(c);
-                        if (cd.d === newIdeName) return false;
+                        if (cd.d === newIdeName) return false; // já está no grupo
                         if (!search.trim()) return false;
                         const s = search.toLowerCase();
                         return cd.n.toLowerCase().includes(s) || String(cd.i).includes(s) || cd.c.toLowerCase().includes(s);
-                      }).slice(0,20).map(c => {
+                      }).slice(0,30).map(c => {
                         const cd = getClientData(c);
+                        const selected = selectedForIde.includes(cd.i);
                         return (
-                          <div key={cd.i} onClick={() => { addToIde(cd.i, newIdeName); setSearch(""); }} style={{
-                            display:"flex",alignItems:"center",gap:8,padding:"8px 12px",cursor:"pointer",borderRadius:6,marginBottom:2
-                          }} onMouseEnter={e=>e.currentTarget.style.background="rgba(59,130,246,0.1)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                          <div key={cd.i} onClick={() => setSelectedForIde(prev => selected ? prev.filter(x=>x!==cd.i) : [...prev, cd.i])} style={{
+                            display:"flex",alignItems:"center",gap:8,padding:"8px 12px",cursor:"pointer",borderRadius:6,marginBottom:2,
+                            background: selected ? "rgba(59,130,246,0.15)" : "transparent",
+                            border: selected ? "1px solid rgba(59,130,246,0.3)" : "1px solid transparent"
+                          }}>
+                            <div style={{width:16,height:16,borderRadius:4,border:"2px solid #3a5070",
+                              background:selected?"#3b82f6":"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                              {selected && <span style={{color:"#fff",fontSize:10}}>✓</span>}
+                            </div>
                             <span style={{fontSize:11,color:"#5a7a9a",fontFamily:"monospace"}}>{cd.i}</span>
-                            <span style={{fontSize:13,color:"#c8d6e5"}}>{cd.n}</span>
-                            <span style={{fontSize:10,color:"#4a5a6a"}}>{cd.c}</span>
-                            <span style={{fontSize:11,color:"#3b82f6",marginLeft:"auto"}}>+ Adicionar</span>
+                            <span style={{fontSize:13,color:"#c8d6e5",fontWeight:500}}>{cd.n}</span>
+                            <span style={{fontSize:10,color:"#4a5a6a",marginLeft:"auto"}}>{cd.c}</span>
+                            {cd.d && <span style={{fontSize:9,color:"#f59e0b",padding:"1px 4px",background:"rgba(245,158,11,0.15)",borderRadius:3}}>IDE: {cd.d}</span>}
+                            {cd.c === "CADASTRO PENDENTE" && <span style={{fontSize:9,color:"#fca5a5",padding:"1px 4px",background:"rgba(220,38,38,0.15)",borderRadius:3}}>📁 PENDENTE</span>}
                           </div>
                         );
                       })}
                     </div>
+                    
+                    {selectedForIde.length > 0 && (
+                      <div style={{padding:10,background:"rgba(59,130,246,0.1)",borderRadius:8,marginBottom:12}}>
+                        <div style={{fontSize:11,color:"#60a5fa",marginBottom:6}}>{selectedForIde.length} selecionado(s) para adicionar:</div>
+                        {selectedForIde.map(id => {
+                          const cd = getClientData(clientes.find(c => c.i === id) || {i:id,n:"?"});
+                          return (
+                            <span key={id} style={{display:"inline-flex",alignItems:"center",gap:4,padding:"3px 8px",margin:"2px",background:"rgba(59,130,246,0.2)",borderRadius:4,fontSize:11,color:"#c8d6e5"}}>
+                              {cd.i} - {cd.n}
+                              <span onClick={(e) => {e.stopPropagation();setSelectedForIde(prev=>prev.filter(x=>x!==id));}} style={{cursor:"pointer",color:"#ef4444",fontWeight:700,marginLeft:4}}>✕</span>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                    
+                    <button disabled={selectedForIde.length === 0} onClick={() => {
+                      // Adiciona um por um (a função addToIde já cuida da herança automática de endereço para pendentes)
+                      selectedForIde.forEach(id => addToIde(id, newIdeName));
+                      showToast(`✅ ${selectedForIde.length} cliente(s) adicionado(s) ao grupo ${newIdeName}!`);
+                      setIdeAction(null);setSelectedForIde([]);setNewIdeName("");setSearch("");
+                    }} style={{
+                      width:"100%",padding:"12px",
+                      background: selectedForIde.length === 0 ? "#1a2744" : "linear-gradient(135deg,#2563eb,#1d4ed8)",
+                      border:"none",borderRadius:8,
+                      color: selectedForIde.length === 0 ? "#4a5a6a" : "#fff",
+                      fontSize:13,fontWeight:600,cursor: selectedForIde.length === 0 ? "default" : "pointer"
+                    }}>Adicionar ao grupo {newIdeName} {selectedForIde.length > 0 && `(${selectedForIde.length} cliente${selectedForIde.length===1?'':'s'})`}</button>
                   </>
                 )}
               </div>
