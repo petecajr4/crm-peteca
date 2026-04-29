@@ -6860,96 +6860,125 @@ function CRMPeteca() {
 
             {/* ADICIONAR A GRUPO EXISTENTE */}
             {/* ADICIONAR A GRUPO EXISTENTE */}
-            {ideAction === "adicionar" && (
-              <div style={{background:"#0a1220",borderRadius:10,padding:20,marginBottom:16}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-                  <div style={{fontSize:13,fontWeight:600,color:"#3b82f6"}}>Adicionar clientes a grupo existente</div>
-                  <button onClick={() => {setIdeAction(null);setNewIdeName("");setSearch("");setSelectedForIde([]);}} style={{fontSize:11,color:"#5a7a9a",background:"none",border:"none",cursor:"pointer"}}>← Voltar</button>
-                </div>
-                
-                <label style={{fontSize:10,color:"#5a7a9a",display:"block",marginBottom:4}}>Selecione o grupo</label>
-                <select onChange={e => setNewIdeName(e.target.value)} value={newIdeName}
-                  style={{width:"100%",padding:"10px 14px",background:"#111c30",border:"1px solid #1e3050",borderRadius:8,color:"#e2e8f0",fontSize:13,marginBottom:12}}>
-                  <option value="">Selecione o grupo...</option>
-                  {ides.filter(i=>i!=="TODOS"&&i!=="COM_IDE"&&i!=="SEM_IDE").map(i => <option key={i} value={i}>{i} ({getIdeMembers(i).length} membros)</option>)}
-                </select>
-                
-                {newIdeName && (
-                  <>
-                    <div style={{fontSize:11,color:"#5a7a9a",marginBottom:6}}>Membros atuais ({getIdeMembers(newIdeName).length}):</div>
-                    <div style={{marginBottom:12,maxHeight:80,overflowY:"auto"}}>
-                      {getIdeMembers(newIdeName).map(m => (
-                        <span key={m.i} style={{display:"inline-block",padding:"3px 8px",margin:"2px",background:"rgba(59,130,246,0.15)",borderRadius:4,fontSize:11,color:"#8899bb"}}>
-                          {m.i} - {m.n} ({m.c})
-                        </span>
-                      ))}
+            {ideAction === "adicionar" && (() => {
+              // Detectar IDEs dos selecionados
+              const idesNosSelecionados = [...new Set(
+                selectedForIde
+                  .map(id => {
+                    const cd = getClientData(clientes.find(c => c.i === id) || {});
+                    return cd.d || null;
+                  })
+                  .filter(Boolean)
+              )];
+              
+              const ideUnico = idesNosSelecionados.length === 1 ? idesNosSelecionados[0] : null;
+              const conflito = idesNosSelecionados.length > 1;
+              const semIde = idesNosSelecionados.length === 0 && selectedForIde.length > 0;
+              const podeAgrupar = ideUnico && selectedForIde.length >= 2;
+              
+              return (
+                <div style={{background:"#0a1220",borderRadius:10,padding:20,marginBottom:16}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+                    <div>
+                      <div style={{fontSize:13,fontWeight:600,color:"#3b82f6"}}>Adicionar clientes a grupo existente</div>
+                      <div style={{fontSize:11,color:"#5a7a9a",marginTop:2}}>Selecione clientes — pelo menos um deles deve já estar em um IDE</div>
                     </div>
-                    
-                    <label style={{fontSize:10,color:"#5a7a9a",display:"block",marginBottom:4}}>Buscar clientes para adicionar ao grupo</label>
-                    <input placeholder="Nome, ID ou cidade..." value={search} onChange={e => setSearch(e.target.value)}
-                      style={{width:"100%",padding:"8px 12px",background:"#111c30",border:"1px solid #1e3050",borderRadius:8,color:"#e2e8f0",fontSize:13,marginBottom:8}}/>
-                    
-                    <div style={{maxHeight:200,overflowY:"auto",marginBottom:12}}>
-                      {clientes.filter(c => {
-                        const cd = getClientData(c);
-                        if (cd.d === newIdeName) return false; // já está no grupo
-                        if (!search.trim()) return false;
-                        const s = search.toLowerCase();
-                        return cd.n.toLowerCase().includes(s) || String(cd.i).includes(s) || cd.c.toLowerCase().includes(s);
-                      }).slice(0,30).map(c => {
-                        const cd = getClientData(c);
-                        const selected = selectedForIde.includes(cd.i);
-                        return (
-                          <div key={cd.i} onClick={() => setSelectedForIde(prev => selected ? prev.filter(x=>x!==cd.i) : [...prev, cd.i])} style={{
-                            display:"flex",alignItems:"center",gap:8,padding:"8px 12px",cursor:"pointer",borderRadius:6,marginBottom:2,
-                            background: selected ? "rgba(59,130,246,0.15)" : "transparent",
-                            border: selected ? "1px solid rgba(59,130,246,0.3)" : "1px solid transparent"
-                          }}>
-                            <div style={{width:16,height:16,borderRadius:4,border:"2px solid #3a5070",
-                              background:selected?"#3b82f6":"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
-                              {selected && <span style={{color:"#fff",fontSize:10}}>✓</span>}
-                            </div>
-                            <span style={{fontSize:11,color:"#5a7a9a",fontFamily:"monospace"}}>{cd.i}</span>
-                            <span style={{fontSize:13,color:"#c8d6e5",fontWeight:500}}>{cd.n}</span>
-                            <span style={{fontSize:10,color:"#4a5a6a",marginLeft:"auto"}}>{cd.c}</span>
-                            {cd.d && <span style={{fontSize:9,color:"#f59e0b",padding:"1px 4px",background:"rgba(245,158,11,0.15)",borderRadius:3}}>IDE: {cd.d}</span>}
-                            {cd.c === "CADASTRO PENDENTE" && <span style={{fontSize:9,color:"#fca5a5",padding:"1px 4px",background:"rgba(220,38,38,0.15)",borderRadius:3}}>📁 PENDENTE</span>}
+                    <button onClick={() => {setIdeAction(null);setNewIdeName("");setSearch("");setSelectedForIde([]);}} style={{fontSize:11,color:"#5a7a9a",background:"none",border:"none",cursor:"pointer"}}>← Voltar</button>
+                  </div>
+                  
+                  <label style={{fontSize:10,color:"#5a7a9a",display:"block",marginBottom:4}}>Buscar clientes</label>
+                  <input placeholder="Nome, ID ou cidade..." value={search} onChange={e => setSearch(e.target.value)}
+                    style={{width:"100%",padding:"8px 12px",background:"#111c30",border:"1px solid #1e3050",borderRadius:8,color:"#e2e8f0",fontSize:13,marginBottom:8}}/>
+                  
+                  <div style={{maxHeight:240,overflowY:"auto",marginBottom:12}}>
+                    {clientes.filter(c => {
+                      const cd = getClientData(c);
+                      if (!search.trim()) return false;
+                      const s = search.toLowerCase();
+                      return cd.n.toLowerCase().includes(s) || String(cd.i).includes(s) || cd.c.toLowerCase().includes(s);
+                    }).slice(0,30).map(c => {
+                      const cd = getClientData(c);
+                      const selected = selectedForIde.includes(cd.i);
+                      return (
+                        <div key={cd.i} onClick={() => setSelectedForIde(prev => selected ? prev.filter(x=>x!==cd.i) : [...prev, cd.i])} style={{
+                          display:"flex",alignItems:"center",gap:8,padding:"8px 12px",cursor:"pointer",borderRadius:6,marginBottom:2,
+                          background: selected ? "rgba(59,130,246,0.15)" : "transparent",
+                          border: selected ? "1px solid rgba(59,130,246,0.3)" : "1px solid transparent"
+                        }}>
+                          <div style={{width:16,height:16,borderRadius:4,border:"2px solid #3a5070",
+                            background:selected?"#3b82f6":"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                            {selected && <span style={{color:"#fff",fontSize:10}}>✓</span>}
                           </div>
-                        );
-                      })}
-                    </div>
-                    
-                    {selectedForIde.length > 0 && (
-                      <div style={{padding:10,background:"rgba(59,130,246,0.1)",borderRadius:8,marginBottom:12}}>
-                        <div style={{fontSize:11,color:"#60a5fa",marginBottom:6}}>{selectedForIde.length} selecionado(s) para adicionar:</div>
+                          <span style={{fontSize:11,color:"#5a7a9a",fontFamily:"monospace"}}>{cd.i}</span>
+                          <span style={{fontSize:13,color:"#c8d6e5",fontWeight:500,flex:1}}>{cd.n}</span>
+                          <span style={{fontSize:10,color:"#4a5a6a"}}>{cd.c}</span>
+                          {cd.d ? (
+                            <span style={{fontSize:9,color:"#a78bfa",padding:"2px 6px",background:"rgba(168,85,247,0.15)",borderRadius:3,fontWeight:600}}>🔗 {cd.d}</span>
+                          ) : (
+                            <span style={{fontSize:9,color:"#64748b",padding:"2px 6px",background:"rgba(255,255,255,0.04)",borderRadius:3}}>sem IDE</span>
+                          )}
+                          {cd.c === "CADASTRO PENDENTE" && <span style={{fontSize:9,color:"#fca5a5",padding:"1px 4px",background:"rgba(220,38,38,0.15)",borderRadius:3}}>📁 PEND</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  
+                  {/* Resumo dos selecionados */}
+                  {selectedForIde.length > 0 && (
+                    <div style={{padding:12,background:"rgba(59,130,246,0.08)",border:"1px solid rgba(59,130,246,0.2)",borderRadius:8,marginBottom:12}}>
+                      <div style={{fontSize:11,color:"#60a5fa",marginBottom:8,fontWeight:600}}>{selectedForIde.length} selecionado{selectedForIde.length===1?'':'s'}:</div>
+                      <div style={{marginBottom:8}}>
                         {selectedForIde.map(id => {
                           const cd = getClientData(clientes.find(c => c.i === id) || {i:id,n:"?"});
                           return (
                             <span key={id} style={{display:"inline-flex",alignItems:"center",gap:4,padding:"3px 8px",margin:"2px",background:"rgba(59,130,246,0.2)",borderRadius:4,fontSize:11,color:"#c8d6e5"}}>
                               {cd.i} - {cd.n}
+                              {cd.d && <span style={{fontSize:9,color:"#a78bfa",marginLeft:4,padding:"1px 4px",background:"rgba(168,85,247,0.2)",borderRadius:3}}>{cd.d}</span>}
                               <span onClick={(e) => {e.stopPropagation();setSelectedForIde(prev=>prev.filter(x=>x!==id));}} style={{cursor:"pointer",color:"#ef4444",fontWeight:700,marginLeft:4}}>✕</span>
                             </span>
                           );
                         })}
                       </div>
-                    )}
-                    
-                    <button disabled={selectedForIde.length === 0} onClick={() => {
-                      // Adiciona um por um (a função addToIde já cuida da herança automática de endereço para pendentes)
-                      selectedForIde.forEach(id => addToIde(id, newIdeName));
-                      showToast(`✅ ${selectedForIde.length} cliente(s) adicionado(s) ao grupo ${newIdeName}!`);
-                      setIdeAction(null);setSelectedForIde([]);setNewIdeName("");setSearch("");
-                    }} style={{
-                      width:"100%",padding:"12px",
-                      background: selectedForIde.length === 0 ? "#1a2744" : "linear-gradient(135deg,#2563eb,#1d4ed8)",
-                      border:"none",borderRadius:8,
-                      color: selectedForIde.length === 0 ? "#4a5a6a" : "#fff",
-                      fontSize:13,fontWeight:600,cursor: selectedForIde.length === 0 ? "default" : "pointer"
-                    }}>Adicionar ao grupo {newIdeName} {selectedForIde.length > 0 && `(${selectedForIde.length} cliente${selectedForIde.length===1?'':'s'})`}</button>
-                  </>
-                )}
-              </div>
-            )}
+                      
+                      {/* Status do agrupamento */}
+                      {ideUnico && (
+                        <div style={{padding:"8px 10px",background:"rgba(34,197,94,0.1)",border:"1px solid rgba(34,197,94,0.25)",borderRadius:6,fontSize:11,color:"#86efac"}}>
+                          ✓ IDE detectado: <strong style={{color:"#22c55e"}}>{ideUnico}</strong> — todos serão agrupados aqui
+                        </div>
+                      )}
+                      {conflito && (
+                        <div style={{padding:"8px 10px",background:"rgba(220,38,38,0.1)",border:"1px solid rgba(220,38,38,0.3)",borderRadius:6,fontSize:11,color:"#fca5a5"}}>
+                          ⚠ <strong>IDEs diferentes detectados:</strong> {idesNosSelecionados.join(", ")}.<br/>
+                          Selecione clientes de apenas UM IDE existente.
+                        </div>
+                      )}
+                      {semIde && (
+                        <div style={{padding:"8px 10px",background:"rgba(245,158,11,0.1)",border:"1px solid rgba(245,158,11,0.3)",borderRadius:6,fontSize:11,color:"#fdba74"}}>
+                          ⚠ Nenhum dos selecionados está em IDE. Use <strong>"+ Criar Novo Grupo"</strong> para criar um.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  
+                  <button disabled={!podeAgrupar} onClick={() => {
+                    selectedForIde.forEach(id => addToIde(id, ideUnico));
+                    showToast(`✅ ${selectedForIde.length} cliente(s) agrupado(s) em ${ideUnico}!`);
+                    setIdeAction(null);setSelectedForIde([]);setNewIdeName("");setSearch("");
+                  }} style={{
+                    width:"100%",padding:"12px",
+                    background: !podeAgrupar ? "#1a2744" : "linear-gradient(135deg,#2563eb,#1d4ed8)",
+                    border:"none",borderRadius:8,
+                    color: !podeAgrupar ? "#4a5a6a" : "#fff",
+                    fontSize:13,fontWeight:600,cursor: !podeAgrupar ? "default" : "pointer"
+                  }}>
+                    {ideUnico 
+                      ? `Agrupar ${selectedForIde.length} cliente${selectedForIde.length===1?'':'s'} em ${ideUnico}`
+                      : "Selecione clientes (ao menos 2, sendo um já em IDE)"
+                    }
+                  </button>
+                </div>
+              );
+            })()}
 
             {/* SUGERIR DUPLICADOS */}
             {ideAction === "sugerir" && (() => {
