@@ -6961,8 +6961,36 @@ function CRMPeteca() {
                   )}
                   
                   <button disabled={!podeAgrupar} onClick={() => {
-                    selectedForIde.forEach(id => addToIde(id, ideUnico));
-                    showToast(`✅ ${selectedForIde.length} cliente(s) agrupado(s) em ${ideUnico}!`);
+                    // v6 FIX: faz batch único (não chamar addToIde em loop, dá race condition)
+                    const newMods = {...mods};
+                    
+                    // Pega o membro do IDE com endereço completo (pra herdar pra pendentes)
+                    const membroFonte = clientes
+                      .map(c => getClientData(c))
+                      .find(c => c.d === ideUnico && c.c && c.c !== "CADASTRO PENDENTE");
+                    
+                    let herdaramEndereco = 0;
+                    selectedForIde.forEach(id => {
+                      if (!newMods[id]) newMods[id] = {};
+                      newMods[id].d = ideUnico;
+                      
+                      // Auto-herança: se cliente está pendente e tem fonte
+                      const cliente = clientes.find(c => c.i === id);
+                      if (cliente && membroFonte) {
+                        const dadosAtuais = getClientData(cliente);
+                        if (dadosAtuais.c === "CADASTRO PENDENTE") {
+                          if (membroFonte.c) newMods[id].c = membroFonte.c;
+                          if (membroFonte.b) newMods[id].b = membroFonte.b;
+                          if (membroFonte.r) newMods[id].r = membroFonte.r;
+                          if (membroFonte.nu) newMods[id].nu = membroFonte.nu;
+                          herdaramEndereco++;
+                        }
+                      }
+                    });
+                    
+                    saveMods(newMods);
+                    const msgHerdou = herdaramEndereco > 0 ? ` (${herdaramEndereco} pendente${herdaramEndereco===1?'':'s'} ganharam endereço de ${membroFonte.n})` : '';
+                    showToast(`✅ ${selectedForIde.length} cliente(s) agrupado(s) em ${ideUnico}!${msgHerdou}`);
                     setIdeAction(null);setSelectedForIde([]);setNewIdeName("");setSearch("");
                   }} style={{
                     width:"100%",padding:"12px",
