@@ -1299,9 +1299,13 @@ function CRMPeteca() {
 
   // Cidades e IDEs únicos
   const cidades = useMemo(() => {
-    const set = new Set(clientes.map(c => c.c));
+    // v6: aplica mods pra mostrar cidade real (não a original do CLIENTES_RAW)
+    const set = new Set(clientes.map(c => {
+      const mod = mods[c.i];
+      return (mod?.c !== undefined && mod.c !== '') ? mod.c : c.c;
+    }));
     return ["TODAS", ...Array.from(set).sort()];
-  }, [clientes]);
+  }, [clientes, mods]);
 
   const ides = useMemo(() => {
     const set = new Set(clientes.map(c => {
@@ -1535,7 +1539,18 @@ function CRMPeteca() {
       for (const ano of todosAnos) {
         try {
           if (porAno[ano] && porAno[ano].length > 0) {
-            await window.storage.set(`peteca_vendas_ano_${ano}`, JSON.stringify({ano: parseInt(ano), v: porAno[ano].map(v => ({...v}))}));
+            // v6 FIX: salvar no formato COMPACTO correto (igual o saveVendas original)
+            const compactas = porAno[ano].map(v => ({
+              n: v.numSaida, d: v.data, dd: v.dataDisplay,
+              ci: v.clienteId, nc: v.nomeCliente, ve: v.vendedor,
+              cp: v.condPagto, vl: v.valorLiquido,
+              ds: v.desconto || 0, fr: v.frete || 0,
+              p: (v.produtos || []).map(p => ({
+                c: p.codigo, d: p.descricao, q: p.qtde,
+                u: p.vlrUnitario, t: p.vlrTotal
+              }))
+            }));
+            await window.storage.set(`peteca_vendas_ano_${ano}`, JSON.stringify(compactas));
           } else {
             await window.storage.delete(`peteca_vendas_ano_${ano}`);
           }
@@ -6289,7 +6304,7 @@ function CRMPeteca() {
                 <label style={{fontSize:11,color:"#5a7a9a",display:"block",marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>Cidade</label>
                 <select value={cidadeFiltro} onChange={e => {setCidadeFiltro(e.target.value);setPage(0);}}
                   style={{width:"100%",padding:"10px 14px",background:"#0a1220",border:"1px solid #1e3050",borderRadius:8,color:"#e2e8f0",fontSize:13}}>
-                  {cidades.map(c => <option key={c} value={c}>{c} {c!=="TODAS"?`(${clientes.filter(cl=>cl.c===c).length})`:""}</option>)}
+                  {cidades.map(c => <option key={c} value={c}>{c} {c!=="TODAS"?`(${clientes.filter(cl=>{const m=mods[cl.i];const cidReal=(m?.c!==undefined&&m.c!=='')?m.c:cl.c;return cidReal===c;}).length})`:""}</option>)}
                 </select>
               </div>
               <div style={{flex:"0 1 200px"}}>
