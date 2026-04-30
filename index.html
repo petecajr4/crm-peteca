@@ -1506,7 +1506,7 @@ function CRMPeteca() {
     showToast("Cliente removido do grupo econômico");
   };
 
-  // v6: Excluir definitivamente — apaga cliente + vendas + anotações + mods
+  // v6: Excluir definitivamente — apaga cliente + vendas + anotações + mods + finaliza Kanban
   const excluirDefinitivamente = async (clientId) => {
     try {
       // 1. Remover do array de clientes (e salvar)
@@ -1578,7 +1578,31 @@ function CRMPeteca() {
       });
       if (mudouAlias) await salvarAlias(novoAlias);
       
-      showToast(`🗑 Cliente excluído definitivamente • ${vendasRemovidas} vendas removidas${anotacoesRemovidas > 0 ? ` • ${anotacoesRemovidas} anotações` : ''}`);
+      // 6. v6: Finalizar Kanban(s) ativo(s) deste cliente no Google Sheets
+      let kanbansFinalizados = 0;
+      try {
+        const kanbansAtivosCliente = kanbans.filter(k => 
+          String(k.cliente_id) === String(clientId) && 
+          String(k.finalizado).toLowerCase() !== 'sim'
+        );
+        for (const k of kanbansAtivosCliente) {
+          const res = await callKanbanAPI('finalize', { 
+            id: k.id, 
+            motivo: 'Cliente excluído definitivamente do CRM',
+            por: adminName || 'Admin'
+          });
+          if (res.ok) kanbansFinalizados++;
+        }
+        if (kanbansFinalizados > 0) {
+          // Atualiza o state local removendo os finalizados
+          setKanbans(prev => prev.filter(k => String(k.cliente_id) !== String(clientId)));
+        }
+      } catch(e) { console.warn('Erro ao finalizar Kanban(s):', e); }
+      
+      const partes = [`${vendasRemovidas} vendas removidas`];
+      if (anotacoesRemovidas > 0) partes.push(`${anotacoesRemovidas} anotações`);
+      if (kanbansFinalizados > 0) partes.push(`${kanbansFinalizados} Kanban${kanbansFinalizados===1?'':'s'} finalizado${kanbansFinalizados===1?'':'s'}`);
+      showToast(`🗑 Cliente excluído definitivamente • ${partes.join(' • ')}`);
     } catch(e) {
       console.error("Erro ao excluir:", e);
       showToast("Erro ao excluir: " + e.message, "error");
@@ -6830,6 +6854,11 @@ function CRMPeteca() {
           }
         });
         const anotCount = (anotacoes[cli.i] || []).length;
+        // v6: detectar Kanban(s) ativo(s) deste cliente
+        const kanbansAtivos = kanbans.filter(k => 
+          String(k.cliente_id) === String(cli.i) && 
+          String(k.finalizado).toLowerCase() !== 'sim'
+        );
         const fmt = n => 'R$ ' + Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2});
         
         return (
@@ -6868,6 +6897,9 @@ function CRMPeteca() {
                       <div style={{display:"flex",flexDirection:"column",gap:6,fontSize:12,color:"#fca5a5"}}>
                         <div>🛒 <strong>{vendasCount} vendas</strong> ({fmt(vendasTotal)}) — serão removidas</div>
                         {anotCount > 0 && <div>📝 <strong>{anotCount} anotações</strong> — serão removidas</div>}
+                        {kanbansAtivos.length > 0 && (
+                          <div>🎱 <strong>{kanbansAtivos.length} Kanban{kanbansAtivos.length===1?'':'s'} ativo{kanbansAtivos.length===1?'':'s'}</strong> ({kanbansAtivos.map(k => k.vendedor).join(', ')}) — será{kanbansAtivos.length===1?'':'ão'} finalizado{kanbansAtivos.length===1?'':'s'}</div>
+                        )}
                         <div>🔗 IDE / mesclagens — referências removidas</div>
                       </div>
                     </div>
