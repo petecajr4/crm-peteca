@@ -58,6 +58,7 @@ function CRMPeteca() {
   const [selectedClient, setSelectedClient] = useState(null);
   const [showIdeModal, setShowIdeModal] = useState(false);
   const [showConfirmModal, setShowConfirmModal] = useState(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(null); // {cliente, step: 1|2}
   const [showBackupModal, setShowBackupModal] = useState(false);
   const [showConfirmReset, setShowConfirmReset] = useState(null);
   const [anosSelecionados, setAnosSelecionados] = useState([]);
@@ -1503,6 +1504,85 @@ function CRMPeteca() {
     newMods[clientId].d = null;
     saveMods(newMods);
     showToast("Cliente removido do grupo econômico");
+  };
+
+  // v6: Excluir definitivamente — apaga cliente + vendas + anotações + mods
+  const excluirDefinitivamente = async (clientId) => {
+    try {
+      // 1. Remover do array de clientes (e salvar)
+      const novosClientes = clientes.filter(c => String(c.i) !== String(clientId));
+      await saveClientes(novosClientes);
+      
+      // 2. Remover vendas dele de todos os anos
+      const novasVendas = {};
+      let vendasRemovidas = 0;
+      Object.entries(vendas).forEach(([mes, arr]) => {
+        if (Array.isArray(arr)) {
+          const filtradas = arr.filter(v => String(v.clienteId) !== String(clientId));
+          vendasRemovidas += arr.length - filtradas.length;
+          if (filtradas.length > 0) novasVendas[mes] = filtradas;
+        }
+      });
+      setVendas(novasVendas);
+      // Salvar por ano no storage
+      const porAno = {};
+      Object.entries(novasVendas).forEach(([mes, arr]) => {
+        const ano = mes.slice(0,4);
+        if (!porAno[ano]) porAno[ano] = [];
+        porAno[ano].push(...arr);
+      });
+      const todosAnos = [...new Set(Object.keys(vendas).map(m => m.slice(0,4)))];
+      for (const ano of todosAnos) {
+        try {
+          if (porAno[ano] && porAno[ano].length > 0) {
+            await window.storage.set(`peteca_vendas_ano_${ano}`, JSON.stringify({ano: parseInt(ano), v: porAno[ano].map(v => ({...v}))}));
+          } else {
+            await window.storage.delete(`peteca_vendas_ano_${ano}`);
+          }
+        } catch(e) {}
+      }
+      try {
+        const anosRestantes = Object.keys(porAno).filter(a => porAno[a].length > 0).sort();
+        await window.storage.set(VENDAS_STORAGE, JSON.stringify({version: 2, anos: anosRestantes}));
+      } catch(e) {}
+      
+      // 3. Remover anotações
+      const novasAnotacoes = {...anotacoes};
+      let anotacoesRemovidas = 0;
+      if (novasAnotacoes[clientId]) {
+        anotacoesRemovidas = novasAnotacoes[clientId].length || 0;
+        delete novasAnotacoes[clientId];
+        setAnotacoes(novasAnotacoes);
+        try { await window.storage.set(ANOTACOES_STORAGE, JSON.stringify(novasAnotacoes)); } catch(e) {}
+      }
+      
+      // 4. Remover mods
+      const novosMods = {...mods};
+      if (novosMods[clientId]) {
+        delete novosMods[clientId];
+        await saveMods(novosMods);
+      }
+      
+      // 5. Remover de aliasClientes (caso seja origem ou destino de mesclagem)
+      const novoAlias = {...aliasClientes};
+      let mudouAlias = false;
+      if (novoAlias[String(clientId)]) {
+        delete novoAlias[String(clientId)];
+        mudouAlias = true;
+      }
+      Object.keys(novoAlias).forEach(k => {
+        if (String(novoAlias[k]) === String(clientId)) {
+          delete novoAlias[k];
+          mudouAlias = true;
+        }
+      });
+      if (mudouAlias) await salvarAlias(novoAlias);
+      
+      showToast(`🗑 Cliente excluído definitivamente • ${vendasRemovidas} vendas removidas${anotacoesRemovidas > 0 ? ` • ${anotacoesRemovidas} anotações` : ''}`);
+    } catch(e) {
+      console.error("Erro ao excluir:", e);
+      showToast("Erro ao excluir: " + e.message, "error");
+    }
   };
 
   // Backup export/import
@@ -6713,15 +6793,117 @@ function CRMPeteca() {
             </div>
 
             {/* Ações */}
-            <div style={{display:"flex",gap:12}}>
+            <div style={{display:"flex",gap:12,flexDirection:"column"}}>
               <button onClick={() => {toggleAtivo(selectedClient.i, selectedClient.a);setSelectedClient(null);}} style={{
-                flex:1,padding:"12px",background:selectedClient.a===1?"#3b1111":"#0d3320",
+                width:"100%",padding:"12px",background:selectedClient.a===1?"#3b1111":"#0d3320",
                 border:`1px solid ${selectedClient.a===1?"#5c2020":"#1a5c35"}`,borderRadius:10,
                 color:selectedClient.a===1?"#f87171":"#4ade80",fontSize:13,fontWeight:600,cursor:"pointer"
               }}>{selectedClient.a===1?"⛔ Inativar Cliente":"✅ Ativar Cliente"}</button>
+              
+              {/* v6: Excluir definitivamente */}
+              <button onClick={() => setShowDeleteModal({ cliente: selectedClient, step: 1 })} style={{
+                width:"100%",padding:"10px",background:"#1a0a0a",
+                border:"1px solid #4c1d1d",borderRadius:10,
+                color:"#fca5a5",fontSize:11,fontWeight:600,cursor:"pointer",
+                display:"flex",alignItems:"center",justifyContent:"center",gap:6
+              }}>🗑 Excluir Definitivamente (cliente + vendas)</button>
             </div>
           </div>
         </div>
+        );
+      })()}
+
+      {/* v6 — MODAL: Excluir Definitivamente */}
+      {showDeleteModal && (() => {
+        const cli = showDeleteModal.cliente;
+        const cliData = getClientData(clientes.find(c => c.i === cli.i) || cli);
+        // Stats
+        let vendasCount = 0, vendasTotal = 0;
+        Object.values(vendas).forEach(arr => {
+          if (Array.isArray(arr)) {
+            arr.forEach(v => {
+              if (String(v.clienteId) === String(cli.i)) {
+                vendasCount++;
+                vendasTotal += v.valorLiquido || 0;
+              }
+            });
+          }
+        });
+        const anotCount = (anotacoes[cli.i] || []).length;
+        const fmt = n => 'R$ ' + Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2});
+        
+        return (
+          <div onClick={() => setShowDeleteModal(null)} style={{
+            position:"fixed",inset:0,background:"rgba(0,0,0,0.85)",backdropFilter:"blur(8px)",
+            zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center",padding:20,animation:"fadeIn .2s"
+          }}>
+            <div onClick={e => e.stopPropagation()} style={{
+              width:"100%",maxWidth:480,background:"#1a0a0a",
+              border:"1px solid #4c1d1d",borderRadius:16,
+              boxShadow:"0 20px 60px rgba(220,38,38,0.3)",overflow:"hidden",
+              animation:"scaleIn .25s"
+            }}>
+              <div style={{padding:"20px 24px",background:"linear-gradient(135deg,rgba(220,38,38,0.15),rgba(127,29,29,0.1))",borderBottom:"1px solid rgba(220,38,38,0.3)"}}>
+                <div style={{fontSize:20,fontWeight:800,color:"#fca5a5",display:"flex",alignItems:"center",gap:10}}>
+                  🗑 Excluir Definitivamente
+                </div>
+                <div style={{fontSize:11,color:"#fdba74",marginTop:4,letterSpacing:0.5}}>⚠️ AÇÃO IRREVERSÍVEL</div>
+              </div>
+              
+              <div style={{padding:"20px 24px"}}>
+                {showDeleteModal.step === 1 ? (
+                  <>
+                    <div style={{fontSize:13,color:"#e2e8f0",lineHeight:1.6,marginBottom:16}}>
+                      Você está prestes a apagar <strong style={{color:"#fff"}}>permanentemente</strong>:
+                    </div>
+                    
+                    <div style={{padding:"12px 14px",background:"rgba(0,0,0,0.4)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:10,marginBottom:16}}>
+                      <div style={{fontSize:14,fontWeight:700,color:"#e2e8f0",marginBottom:6}}>
+                        #{cliData.i} • {cliData.n}
+                      </div>
+                      <div style={{fontSize:11,color:"#94a3b8",marginBottom:10}}>
+                        📍 {cliData.c}{cliData.b ? ' • ' + cliData.b : ''}
+                      </div>
+                      
+                      <div style={{display:"flex",flexDirection:"column",gap:6,fontSize:12,color:"#fca5a5"}}>
+                        <div>🛒 <strong>{vendasCount} vendas</strong> ({fmt(vendasTotal)}) — serão removidas</div>
+                        {anotCount > 0 && <div>📝 <strong>{anotCount} anotações</strong> — serão removidas</div>}
+                        <div>🔗 IDE / mesclagens — referências removidas</div>
+                      </div>
+                    </div>
+                    
+                    <div style={{padding:"10px 12px",background:"rgba(245,158,11,0.08)",border:"1px solid rgba(245,158,11,0.25)",borderRadius:8,fontSize:11,color:"#fdba74",marginBottom:16,lineHeight:1.5}}>
+                      💡 Recomendado: faça um <strong>Backup</strong> antes (botão na sidebar). Esta ação não pode ser desfeita.
+                    </div>
+                    
+                    <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+                      <button onClick={() => setShowDeleteModal(null)} style={{padding:"10px 18px",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,color:"#94a3b8",fontSize:12,fontWeight:600,cursor:"pointer"}}>Cancelar</button>
+                      <button onClick={() => setShowDeleteModal({...showDeleteModal, step: 2})} style={{padding:"10px 18px",background:"linear-gradient(135deg,#dc2626,#b91c1c)",border:"none",borderRadius:8,color:"#fff",fontSize:12,fontWeight:700,cursor:"pointer",boxShadow:"0 4px 12px rgba(220,38,38,0.35)"}}>Continuar →</button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{fontSize:14,color:"#e2e8f0",lineHeight:1.6,marginBottom:14,textAlign:"center"}}>
+                      <span style={{fontSize:36,display:"block",marginBottom:8}}>⚠️</span>
+                      <div style={{fontWeight:700,marginBottom:6}}>Tem certeza ABSOLUTA?</div>
+                      <div style={{fontSize:12,color:"#94a3b8"}}>Ao confirmar, <strong style={{color:"#fca5a5"}}>{cliData.n}</strong> e suas {vendasCount} vendas serão deletadas permanentemente.</div>
+                    </div>
+                    
+                    <div style={{display:"flex",gap:8,justifyContent:"space-between"}}>
+                      <button onClick={() => setShowDeleteModal({...showDeleteModal, step: 1})} style={{padding:"10px 18px",background:"rgba(255,255,255,0.04)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:8,color:"#94a3b8",fontSize:12,fontWeight:600,cursor:"pointer"}}>← Voltar</button>
+                      <button onClick={async () => {
+                        const idCliente = cli.i;
+                        const nomeCliente = cliData.n;
+                        setShowDeleteModal(null);
+                        setSelectedClient(null);
+                        await excluirDefinitivamente(idCliente);
+                      }} style={{padding:"10px 18px",background:"linear-gradient(135deg,#dc2626,#7f1d1d)",border:"none",borderRadius:8,color:"#fff",fontSize:12,fontWeight:800,cursor:"pointer",boxShadow:"0 4px 16px rgba(220,38,38,0.5)"}}>🗑 SIM, EXCLUIR DEFINITIVAMENTE</button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
         );
       })()}
 
