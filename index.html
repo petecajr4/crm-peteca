@@ -22406,16 +22406,47 @@ function CarteiraTab({
       fontSize: 12,
       color: 'var(--md-onv)'
     }
-  }, recalc.mudancas.slice(0, 200).map(x => React.createElement("div", {
-    key: x.id,
+  }, recalc.mudancas.length > 1 && React.createElement("label", {
     style: {
-      padding: '3px 0'
-    }
-  }, x.nome, " ", React.createElement("span", {
-    style: {
+      display: 'flex',
+      gap: 8,
+      alignItems: 'center',
+      padding: '3px 0',
+      cursor: 'pointer',
       color: 'var(--md-mut)'
     }
-  }, "#", x.id), " \u2022 ", x.de, " \u2192 ", React.createElement("b", null, x.para)))), React.createElement("div", {
+  }, React.createElement("input", {
+    type: "checkbox",
+    checked: !(recalc.fora || []).length,
+    onChange: e => setRecalc({
+      ...recalc,
+      fora: e.target.checked ? [] : recalc.mudancas.map(x => x.id)
+    })
+  }), " marcar/desmarcar todos"), recalc.mudancas.map(x => {
+    const on = !(recalc.fora || []).includes(x.id);
+    return React.createElement("label", {
+      key: x.id,
+      style: {
+        display: 'flex',
+        gap: 8,
+        alignItems: 'center',
+        padding: '3px 0',
+        cursor: 'pointer',
+        opacity: on ? 1 : .45
+      }
+    }, React.createElement("input", {
+      type: "checkbox",
+      checked: on,
+      onChange: () => setRecalc({
+        ...recalc,
+        fora: on ? [...(recalc.fora || []), x.id] : (recalc.fora || []).filter(i => i !== x.id)
+      })
+    }), React.createElement("span", null, x.nome, " ", React.createElement("span", {
+      style: {
+        color: 'var(--md-mut)'
+      }
+    }, "#", x.id), " \u2022 ", x.de, " \u2192 ", React.createElement("b", null, x.para)));
+  })), React.createElement("div", {
     style: {
       display: 'flex',
       gap: 8,
@@ -22430,18 +22461,21 @@ function CarteiraTab({
       color: 'var(--md-onv)',
       fontSize: 13
     }
-  }, "Cancelar"), React.createElement("button", {
-    disabled: !!rodando || !recalc.mudancas.length,
-    onClick: () => aplicarRecalculo(recalc.mudancas),
-    style: {
-      padding: '0 22px',
-      background: 'var(--md-pc)',
-      border: 'none',
-      color: 'var(--md-onpc)',
-      fontSize: 13,
-      fontWeight: 600
-    }
-  }, rodando === 'recalc' ? 'Aplicando...' : `✅ Aplicar ${recalc.mudancas.length} mudança(s)`)))), React.createElement("div", {
+  }, "Cancelar"), (() => {
+    const sel = recalc.mudancas.filter(x => !(recalc.fora || []).includes(x.id));
+    return React.createElement("button", {
+      disabled: !!rodando || !sel.length,
+      onClick: () => aplicarRecalculo(sel),
+      style: {
+        padding: '0 22px',
+        background: 'var(--md-pc)',
+        border: 'none',
+        color: 'var(--md-onpc)',
+        fontSize: 13,
+        fontWeight: 600
+      }
+    }, rodando === 'recalc' ? 'Aplicando...' : `✅ Aplicar ${sel.length} selecionada(s)`);
+  })()))), React.createElement("div", {
     style: card
   }, React.createElement("div", {
     style: {
