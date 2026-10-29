@@ -7,9 +7,9 @@
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{
-    font-family:'Inter','Segoe UI','Helvetica Neue',sans-serif;
-    background:radial-gradient(ellipse at top left, #0f1629 0%, #080c18 50%, #050811 100%);
-    color:#e2e8f0;
+    font-family:'Roboto','Google Sans',system-ui,'Segoe UI',sans-serif;-webkit-font-smoothing:antialiased;
+    background:var(--md-bg);
+    color:var(--md-on);
     min-height:100vh;
     overflow-x:hidden;
   }
@@ -24,208 +24,1248 @@
   @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
   ::-webkit-scrollbar{width:8px;height:8px}
   ::-webkit-scrollbar-track{background:transparent}
-  ::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#3b4f8a,#1e3050);border-radius:4px}
+  ::-webkit-scrollbar-thumb{background:linear-gradient(180deg,var(--md-p40),var(--md-ov));border-radius:4px}
   input,select,textarea,button{font-family:inherit}
   input,select,textarea{outline:none}
-  input:focus,select:focus,textarea:focus{border-color:#6366f1!important;box-shadow:0 0 0 3px rgba(99,102,241,0.15)}
+  input:focus,select:focus,textarea:focus{border-color:var(--md-p55)!important;box-shadow:0 0 0 3px color-mix(in srgb,var(--md-p55) 15%,transparent)}
   button{cursor:pointer;transition:all .15s cubic-bezier(.4,0,.2,1)}
   button:active:not(:disabled){transform:scale(0.97)}
   button:hover:not(:disabled){filter:brightness(1.1)}
   button:disabled{cursor:default;opacity:0.6}
-  .gradient-text{background:linear-gradient(135deg,#60a5fa 0%,#a78bfa 50%,#f472b6 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+  .gradient-text{background:linear-gradient(135deg,var(--md-p75) 0%,var(--md-t75) 50%,#f472b6 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
   .bubble{position:absolute;border-radius:50%;display:flex;align-items:center;justify-content:center;text-align:center;cursor:grab;user-select:none;transition:box-shadow .2s, filter .2s;will-change:transform;font-weight:700;padding:6px;overflow:hidden;line-height:1.1}
   .bubble:active{cursor:grabbing}
   .bubble:hover{filter:brightness(1.15);z-index:10}
   .bubble-label{pointer-events:none;word-break:break-word;text-shadow:0 1px 2px rgba(0,0,0,0.4)}
+  /* ===== MATERIAL DESIGN 3 ===== */
+  button{border-radius:999px!important;min-height:40px;font-family:inherit;letter-spacing:.1px;transition:filter .15s,transform .1s,background .2s,box-shadow .2s!important}
+  button.md-icon{min-height:0}
+  button:hover:not(:disabled){filter:brightness(1.12)}
+  button:active:not(:disabled){transform:scale(.97)}
+  button:disabled{opacity:.38;cursor:not-allowed!important}
+  button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--md-p75)!important;outline-offset:2px}
+  input:not([type]),input[type=text],input[type=number],input[type=date],input[type=search],input[type=password],input[type=email],input[type=month],select,textarea{border-radius:12px!important;min-height:44px;font-family:inherit;font-size:14px}
+  input:not([type]):focus,input[type=text]:focus,input[type=number]:focus,input[type=date]:focus,input[type=search]:focus,input[type=password]:focus,select:focus,textarea:focus{border-color:var(--md-p75)!important}
+  input[type=checkbox],input[type=radio]{accent-color:var(--md-p55);width:18px;height:18px}
+  table{border-collapse:separate;border-spacing:0}
 </style>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700;800&display=swap" rel="stylesheet">
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
 </head>
 <body>
+<script>
+/* MD3 — cores dinâmicas: gera paleta tonal (OKLCH) a partir de 1 cor-semente */
+(function(){
+  function lin(c){c/=255;return c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4)}
+  function toOklch(hex){
+    hex=hex.replace('#','');if(hex.length===3)hex=hex.split('').map(function(x){return x+x}).join('');
+    var r=lin(parseInt(hex.substr(0,2),16)),g=lin(parseInt(hex.substr(2,2),16)),b=lin(parseInt(hex.substr(4,2),16));
+    var l=Math.cbrt(0.4122214708*r+0.5363325363*g+0.0514459929*b),m=Math.cbrt(0.2119034982*r+0.6806995451*g+0.1073969566*b),s=Math.cbrt(0.0883024619*r+0.2817188376*g+0.6299787005*b);
+    var L=0.2104542553*l+0.793617785*m-0.0040720468*s,A=1.9779984951*l-2.428592205*m+0.4505937099*s,B=0.0259040371*l+0.7827717662*m-0.808675766*s;
+    var C=Math.sqrt(A*A+B*B),H=Math.atan2(B,A)*180/Math.PI;if(H<0)H+=360;return [L,C,H];
+  }
+  window.applyMdTheme=function(seed){
+    var o=toOklch(seed||'#4f6bed'),H=o[2],k=o[1]<0.04?0.25:1; /* semente acinzentada = tema neutro */
+    var P=function(l,c){return 'oklch('+l+' '+(c*k).toFixed(3)+' '+H.toFixed(1)+')'};
+    var T=function(l,c){return 'oklch('+l+' '+(c*k).toFixed(3)+' '+((H+60)%360).toFixed(1)+')'};
+    var N=function(l,c){return 'oklch('+l+' '+c+' '+H.toFixed(1)+')'};
+    var v={
+      bg:N(.145,.012),s1:N(.175,.014),s2:N(.195,.015),s3:N(.215,.016),s4:N(.24,.018),s5:N(.275,.02),
+      ov:N(.34,.03),ol:N(.46,.035),
+      on:N(.94,.01),on2:N(.88,.018),onv:N(.79,.025),mut:N(.65,.03),mut2:N(.53,.03),
+      p40:P(.42,.15),p45:P(.47,.16),p50:P(.53,.17),p55:P(.6,.16),p75:P(.79,.11),p85:P(.88,.07),
+      pc:P(.36,.11),onpc:P(.93,.05),
+      t45:T(.45,.15),t50:T(.5,.16),t55:T(.57,.16),t60:T(.62,.15),t75:T(.78,.11),t85:T(.88,.07)
+    };
+    var st=document.documentElement.style;for(var n in v)st.setProperty('--md-'+n,v[n]);
+    var mt=document.querySelector('meta[name=theme-color]');if(!mt){mt=document.createElement('meta');mt.name='theme-color';document.head.appendChild(mt)}mt.content=seed;
+  };
+  var seed='#4f6bed';try{seed=localStorage.getItem('peteca_md_seed')||seed}catch(e){}
+  window.applyMdTheme(seed);
+})();
+</script>
+
 <div class="aurora-bg">
-  <div class="aurora-blob" style="width:500px;height:500px;background:#6366f1;top:-10%;left:-5%"></div>
-  <div class="aurora-blob" style="width:400px;height:400px;background:#a855f7;top:30%;right:-10%;animation-delay:-7s"></div>
-  <div class="aurora-blob" style="width:450px;height:450px;background:#ec4899;bottom:-10%;left:30%;animation-delay:-14s"></div>
+  <div class="aurora-blob" style="width:500px;height:500px;background:var(--md-p55);top:-10%;left:-5%"></div>
+  <div class="aurora-blob" style="width:400px;height:400px;background:var(--md-t60);top:30%;right:-10%;animation-delay:-7s"></div>
+  <div class="aurora-blob" style="width:450px;height:450px;background:var(--md-t75);bottom:-10%;left:30%;animation-delay:-14s"></div>
 </div>
 <div id="root"></div>
-<script type="text/babel" data-presets="react">
-const { useState, useEffect, useRef, useMemo, useCallback } = React;
+<script>
+/* =====================================================================
+   PETECA × SUPABASE — login, sincronização e Kanban na nuvem
+   (JS puro, sem bibliotecas; embutido no index.html e no vendedor.html)
+   ===================================================================== */
+(function () {
+  var SB_URL = 'https://ovlcnkvgwbdjmiahpxes.supabase.co';
+  var SB_KEY = 'sb_publishable_53fN3cX-brNnzJy6FtRcRA_JaRvn7Sr';
+  var DOMINIO = '@crm.peteca';
+  var SESS_KEY = 'peteca_sb_session';
+  var OLD_API = 'https://script.google.com/macros/s/AKfycbyqtgNDt03Z2cfTlbDAUObosynmHaFvXTW4h76X-p3H55_ZFnkKwqKEi6gwFLI9Er4y/exec';
 
-const API_URL = 'https://script.google.com/macros/s/AKfycbyqtgNDt03Z2cfTlbDAUObosynmHaFvXTW4h76X-p3H55_ZFnkKwqKEi6gwFLI9Er4y/exec';
+  function ler(k, def) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : def; } catch (e) { return def; } }
+  function gravar(k, v) { try { if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  var enc = encodeURIComponent;
+
+  // ------------------------------------------------------------------
+  // AUTENTICAÇÃO
+  // ------------------------------------------------------------------
+  var session = ler(SESS_KEY, null);
+  var refreshing = null;
+  function salvarSessao(s) { session = s; gravar(SESS_KEY, s); }
+
+  function traduzErro(m) {
+    m = String(m || '');
+    if (/invalid login credentials/i.test(m)) return 'Nome ou senha incorretos';
+    if (/password should be|weak/i.test(m)) return 'Senha fraca: use pelo menos 8 caracteres';
+    if (/same.*password|different from the old/i.test(m)) return 'A nova senha precisa ser diferente da atual';
+    if (/failed to fetch|networkerror|load failed/i.test(m)) return 'Sem conexão com a nuvem';
+    if (/duplicate key|23505/i.test(m)) return 'Cliente já possui Kanban ativo';
+    if (/row-level security|42501|permission denied/i.test(m)) return 'Sem permissão para esta ação';
+    return m;
+  }
+
+  function authPost(path, body, bearer) {
+    var h = { apikey: SB_KEY, 'Content-Type': 'application/json' };
+    if (bearer) h.Authorization = 'Bearer ' + bearer;
+    return fetch(SB_URL + '/auth/v1/' + path, { method: 'POST', headers: h, body: JSON.stringify(body || {}) })
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (j) {
+          if (!r.ok) { var e = new Error(traduzErro(j.error_description || j.msg || j.message || j.error || ('HTTP ' + r.status))); e.auth = true; throw e; }
+          return j;
+        });
+      }, function (e) { throw new Error(traduzErro(e.message)); });
+  }
+
+  function guardarToken(j) {
+    salvarSessao({
+      access_token: j.access_token,
+      refresh_token: j.refresh_token,
+      expires_at: Date.now() + (j.expires_in || 3600) * 1000,
+      user_id: (j.user && j.user.id) || (session && session.user_id),
+      perfil: session && session.perfil || null
+    });
+  }
+
+  function expirou() { salvarSessao(null); window.dispatchEvent(new Event('peteca-sessao-expirada')); }
+
+  function refresh() {
+    if (!session || !session.refresh_token) return Promise.reject(new Error('Sessão expirada'));
+    if (!refreshing) {
+      refreshing = authPost('token?grant_type=refresh_token', { refresh_token: session.refresh_token })
+        .then(guardarToken, function (e) { if (e.auth) expirou(); throw e; })
+        .then(function () { refreshing = null; }, function (e) { refreshing = null; throw e; });
+    }
+    return refreshing;
+  }
+
+  function token() {
+    if (!session) return Promise.resolve(null);
+    if (session.expires_at - Date.now() < 120000) return refresh().then(function () { return session && session.access_token; });
+    return Promise.resolve(session.access_token);
+  }
+
+  function rest(path, opt, jaTentou) {
+    opt = opt || {};
+    var h = { apikey: SB_KEY, 'Content-Type': 'application/json' };
+    if (opt.prefer) h.Prefer = opt.prefer;
+    var pTok = opt.anon ? Promise.resolve(null) : token();
+    return pTok.then(function (t) {
+      if (t) h.Authorization = 'Bearer ' + t;
+      return fetch(SB_URL + '/rest/v1/' + path, {
+        method: opt.method || 'GET', headers: h,
+        body: opt.body !== undefined ? JSON.stringify(opt.body) : undefined
+      }).catch(function (e) { throw new Error(traduzErro(e.message)); });
+    }).then(function (r) {
+      if (r.status === 401 && !jaTentou && session && !opt.anon) {
+        return refresh().then(function () { return rest(path, opt, true); });
+      }
+      return r.text().then(function (txt) {
+        var j = null; try { j = txt ? JSON.parse(txt) : null; } catch (e) { j = txt; }
+        if (!r.ok) throw new Error(traduzErro((j && (j.message || j.hint || j.msg)) || ('HTTP ' + r.status)));
+        return j;
+      });
+    });
+  }
+
+  function nomeAtual() { return (session && session.perfil && session.perfil.nome) || '?'; }
+
+  function login(nome, senha) {
+    var email = String(nome || '').trim().toLowerCase().replace(/\s+/g, '') + DOMINIO;
+    return authPost('token?grant_type=password', { email: email, password: senha }).then(function (j) {
+      salvarSessao(null); guardarToken(j);
+      return rest('perfis?select=nome,tipo,ativo&user_id=eq.' + session.user_id);
+    }).then(function (p) {
+      if (!p || !p.length || !p[0].ativo) { return logout().then(function () { throw new Error('Usuário sem perfil ativo. Fale com o administrador.'); }); }
+      session.perfil = { nome: p[0].nome, tipo: p[0].tipo };
+      salvarSessao(session);
+      rest('acessos', { method: 'POST', body: { usuario: p[0].nome, origem: /vendedor/i.test(location.pathname) ? 'vendedor' : 'crm' }, prefer: 'return=minimal' }).catch(function () {});
+      return session.perfil;
+    });
+  }
+
+  function logout() {
+    var t = session && session.access_token;
+    salvarSessao(null);
+    if (!t) return Promise.resolve();
+    return fetch(SB_URL + '/auth/v1/logout', { method: 'POST', headers: { apikey: SB_KEY, Authorization: 'Bearer ' + t } }).catch(function () {});
+  }
+
+  function trocarSenha(nova) {
+    if (!nova || String(nova).length < 8) return Promise.reject(new Error('Use pelo menos 8 caracteres'));
+    return token().then(function (t) {
+      return fetch(SB_URL + '/auth/v1/user', { method: 'PUT', headers: { apikey: SB_KEY, Authorization: 'Bearer ' + t, 'Content-Type': 'application/json' }, body: JSON.stringify({ password: nova }) });
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok) throw new Error(traduzErro(j.msg || j.message || j.error_description || 'Erro ao trocar senha'));
+        return true;
+      });
+    });
+  }
+
+  window.PetecaSB = {
+    url: SB_URL,
+    logado: function () { return !!(session && session.access_token && session.perfil); },
+    perfil: function () { return session && session.perfil; },
+    login: login, logout: logout, trocarSenha: trocarSenha, rest: rest
+  };
+
+  // ------------------------------------------------------------------
+  // SINCRONIZAÇÃO DOS DADOS DO CRM (IndexedDB local <-> tabela crm_kv)
+  // O navegador vira cache; a nuvem é a fonte oficial.
+  // ------------------------------------------------------------------
+  var SYNC_RE = /^(peteca_crm_clientes|peteca_crm_mods|peteca_crm_vendas_index|peteca_vendas_ano_\d{4}|peteca_anotacoes_clientes|peteca_alias_clientes|peteca_metas)$/;
+  var META_KEY = 'peteca_sync_meta', PEND_KEY = 'peteca_sync_pending';
+  var meta = ler(META_KEY, {}), pend = ler(PEND_KEY, {}), seq = Date.now();
+  var raw = null, flushing = null, timer = null, autoIv = null;
+  var estado = { status: 'ok', pendentes: 0, ultimo: ler('peteca_sync_ultimo', null), erro: null };
+
+  function emitir(patch) {
+    for (var k in patch) estado[k] = patch[k];
+    estado.pendentes = Object.keys(pend).length;
+    window.dispatchEvent(new CustomEvent('peteca-sync-status', { detail: Object.assign({}, estado) }));
+  }
+  function salvarPend() { gravar(PEND_KEY, pend); }
+  function salvarMeta() { gravar(META_KEY, meta); }
+
+  function instalar() {
+    if (raw || !window.storage) return;
+    raw = { get: window.storage.get, set: window.storage.set, del: window.storage.delete, list: window.storage.list };
+    window.storage.set = function (k, v) {
+      return raw.set(k, v).then(function (r) {
+        if (SYNC_RE.test(k) && typeof v === 'string') { pend[k] = { op: 'set', v: ++seq }; salvarPend(); agendar(); }
+        return r;
+      });
+    };
+    window.storage.delete = function (k) {
+      return raw.del(k).then(function (r) {
+        if (SYNC_RE.test(k)) { pend[k] = { op: 'del', v: ++seq }; salvarPend(); agendar(); }
+        return r;
+      });
+    };
+  }
+
+  function agendar() {
+    emitir({ status: 'pendente' });
+    clearTimeout(timer);
+    timer = setTimeout(function () { flush().catch(function () {}); }, 1500);
+  }
+
+  function flush(onProg) {
+    if (flushing) return flushing;
+    if (!window.PetecaSB.logado()) return Promise.resolve();
+    var chaves = Object.keys(pend);
+    if (!chaves.length) { emitir({ status: 'ok' }); return Promise.resolve(); }
+    emitir({ status: 'enviando' });
+    var i = 0;
+    flushing = (function proximo() {
+      if (i >= chaves.length) return Promise.resolve();
+      var k = chaves[i++], item = pend[k];
+      if (!item) return proximo();
+      var p;
+      if (item.op === 'del') {
+        p = rest('crm_kv?key=eq.' + enc(k), { method: 'DELETE' }).then(function () { delete meta[k]; });
+      } else {
+        p = raw.get(k).then(function (r) {
+          if (!r || typeof r.value !== 'string') return;
+          return rest('crm_kv?on_conflict=key&select=key,updated_at', {
+            method: 'POST', body: { key: k, value: r.value, updated_by: nomeAtual() },
+            prefer: 'resolution=merge-duplicates,return=representation'
+          }).then(function (res) { if (res && res[0]) meta[k] = res[0].updated_at; });
+        });
+      }
+      return p.then(function () {
+        if (pend[k] && pend[k].v === item.v) delete pend[k];   // só remove se não mudou durante o envio
+        salvarPend(); salvarMeta();
+        if (onProg) onProg(i, chaves.length, k);
+        return proximo();
+      });
+    })().then(function () {
+      var agora = new Date().toISOString(); gravar('peteca_sync_ultimo', agora);
+      emitir({ status: Object.keys(pend).length ? 'pendente' : 'ok', ultimo: agora, erro: null });
+    }, function (e) {
+      emitir({ status: /conexão/i.test(e.message) ? 'offline' : 'erro', erro: e.message });
+      throw e;
+    }).then(function () { flushing = null; }, function (e) { flushing = null; throw e; });
+    return flushing;
+  }
+
+  function pull() {
+    var mudou = [];
+    return rest('crm_kv?select=key,updated_at').then(function (lista) {
+      var remoto = {}; lista.forEach(function (x) { remoto[x.key] = x.updated_at; });
+      var fila = lista.filter(function (x) { return !pend[x.key] && meta[x.key] !== x.updated_at; });
+      var i = 0;
+      function baixar() {
+        if (i >= fila.length) return Promise.resolve();
+        var x = fila[i++];
+        return rest('crm_kv?select=value,updated_at&key=eq.' + enc(x.key)).then(function (r) {
+          if (r && r[0]) return raw.set(x.key, r[0].value).then(function () { meta[x.key] = r[0].updated_at; mudou.push(x.key); });
+        }).then(baixar);
+      }
+      return baixar().then(function () {
+        var apagar = Object.keys(meta).filter(function (k) { return !(k in remoto) && !pend[k]; });
+        return apagar.reduce(function (p, k) {
+          return p.then(function () { return raw.del(k); }).then(function () { delete meta[k]; mudou.push(k); });
+        }, Promise.resolve());
+      }).then(function () {
+        salvarMeta();
+        var agora = new Date().toISOString(); gravar('peteca_sync_ultimo', agora);
+        emitir({ status: Object.keys(pend).length ? 'pendente' : 'ok', ultimo: agora, erro: null });
+        return { mudou: mudou, remotoVazio: lista.length === 0 };
+      });
+    }, function (e) { emitir({ status: /conexão/i.test(e.message) ? 'offline' : 'erro', erro: e.message }); throw e; });
+  }
+
+  function resumoLocal() {
+    return raw.list('').then(function (l) {
+      var chaves = (l.keys || []).filter(function (k) { return SYNC_RE.test(k); });
+      var info = { chaves: chaves.length, clientes: 0, vendas: 0, lista: chaves };
+      return chaves.reduce(function (p, k) {
+        return p.then(function () {
+          if (k !== 'peteca_crm_clientes' && !/^peteca_vendas_ano_/.test(k)) return;
+          return raw.get(k).then(function (r) {
+            try { var a = JSON.parse(r.value); if (Array.isArray(a)) { if (k === 'peteca_crm_clientes') info.clientes = a.length; else info.vendas += a.length; } } catch (e) {}
+          });
+        });
+      }, Promise.resolve()).then(function () { return info; });
+    });
+  }
+
+  function enviarTudo(onProg) {
+    return resumoLocal().then(function (info) {
+      info.lista.forEach(function (k) { pend[k] = { op: 'set', v: ++seq }; });
+      salvarPend();
+      return flush(onProg);
+    });
+  }
+
+  function iniciarAuto() {
+    if (autoIv) return;
+    var ciclo = function () {
+      if (document.hidden || !window.PetecaSB.logado()) return;
+      flush().catch(function () {}).then(function () { return pull(); }).then(function (r) {
+        if (r && r.mudou.length) window.dispatchEvent(new CustomEvent('peteca-sync-changed', { detail: { keys: r.mudou } }));
+      }).catch(function () {});
+    };
+    autoIv = setInterval(ciclo, 60000);
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) ciclo(); });
+    window.addEventListener('online', ciclo);
+  }
+
+  window.PetecaSync = {
+    instalar: instalar, flush: flush, pull: pull, resumoLocal: resumoLocal,
+    enviarTudo: enviarTudo, iniciarAuto: iniciarAuto,
+    estado: function () { return Object.assign({}, estado, { pendentes: Object.keys(pend).length }); }
+  };
+  instalar();
+
+  // ------------------------------------------------------------------
+  // KANBAN — mesmo "contrato" da API antiga (Apps Script), agora no Supabase
+  // ------------------------------------------------------------------
+  function comoAntigo(k) { if (!k) return k; var o = Object.assign({}, k); o.finalizado = k.finalizado ? 'sim' : 'nao'; return o; }
+  function hist(kanban_id, acao, x) {
+    x = x || {};
+    return rest('kanban_historico', { method: 'POST', prefer: 'return=minimal', body: {
+      kanban_id: kanban_id, acao: acao, por: x.por || nomeAtual(),
+      de: x.de || null, para: x.para || null, detalhe: x.detalhes || null
+    } }).catch(function () {});
+  }
+
+  var acoes = {
+    login: function (p) { return login(p.nome, p.senha).then(function (u) { return { ok: true, user: u }; }); },
+    getUsuarios: function () {
+      return rest('rpc/lista_usuarios', { method: 'POST', body: {}, anon: true }).then(function (u) { return { ok: true, usuarios: u || [] }; });
+    },
+    getAll: function () {
+      return rest('kanbans?select=*&order=criado_em.desc').then(function (k) { return { ok: true, kanbans: k.map(comoAntigo) }; });
+    },
+    getByVendedor: function (p) {
+      return rest('kanbans?select=*&finalizado=eq.false&vendedor=eq.' + enc(p.vendedor) + '&order=criado_em.desc')
+        .then(function (k) { return { ok: true, kanbans: k.map(comoAntigo) }; });
+    },
+    hasNewKanbans: function (p) {
+      return rest('kanbans?select=id,cliente_nome,criado_em&finalizado=eq.false&vendedor=eq.' + enc(p.vendedor) + '&criado_em=gt.' + enc(p.desde || new Date().toISOString()))
+        .then(function (k) { return { ok: true, novos: k }; });
+    },
+    getTags: function () {
+      return rest('kanban_tags?select=id,nome,cor&ativo=eq.true&order=nome').then(function (t) { return { ok: true, tags: t }; });
+    },
+    getAllTags: function () {
+      return rest('kanban_tags?select=id,nome,cor,ativo&order=nome').then(function (t) { return { ok: true, tags: t }; });
+    },
+    saveTag: function (p) {
+      var body = { nome: String(p.nome || '').trim(), cor: p.cor || '#a855f7', ativo: p.ativo !== false };
+      if (!body.nome) return Promise.resolve({ ok: false, error: 'Informe o nome da tag' });
+      var req = p.id ? rest('kanban_tags?id=eq.' + p.id, { method: 'PATCH', body: body, prefer: 'return=minimal' })
+                     : rest('kanban_tags', { method: 'POST', body: body, prefer: 'return=minimal' });
+      return req.then(function () { return { ok: true }; });
+    },
+    create: function (p) {
+      var cid = String(p.cliente_id);
+      return rest('kanbans?select=id&finalizado=eq.false&cliente_id=eq.' + enc(cid)).then(function (ex) {
+        if (ex && ex.length) return { ok: false, error: 'Cliente já possui Kanban ativo' };
+        return rest('kanbans', { method: 'POST', prefer: 'return=representation', body: {
+          cliente_id: cid, cliente_nome: p.cliente_nome || 'Cliente sem nome', cliente_cidade: p.cliente_cidade || '',
+          vendedor: p.vendedor, faturamento_hist: Number(p.faturamento_hist) || 0,
+          potencial_perdido: Number(p.potencial_perdido) || 0, observacoes: p.observacoes || '',
+          criado_por: p.criado_por || nomeAtual()
+        } }).then(function (r) {
+          var k = r && r[0];
+          return hist(k.id, 'criou', { por: p.criado_por, detalhes: p.observacoes || null })
+            .then(function () { return { ok: true, id: k.id, kanban: comoAntigo(k) }; });
+        });
+      });
+    },
+    updateStatus: function (p) {
+      return rest('kanbans?select=status&id=eq.' + p.id).then(function (a) {
+        var de = a && a[0] && a[0].status;
+        return rest('kanbans?id=eq.' + p.id, { method: 'PATCH', body: { status: p.novoStatus }, prefer: 'return=minimal' })
+          .then(function () { return hist(p.id, 'mudou_status', { por: p.por, de: de, para: p.novoStatus }); })
+          .then(function () { return { ok: true }; });
+      });
+    },
+    updateTags: function (p) {
+      var tags = Array.isArray(p.tags) ? p.tags.join(';') : String(p.tags || '');
+      return rest('kanbans?id=eq.' + p.id, { method: 'PATCH', body: { tags: tags }, prefer: 'return=minimal' })
+        .then(function () { return hist(p.id, 'mudou_tags', { por: p.por, detalhes: tags.split(';').filter(Boolean).join(', ') || '(sem tags)' }); })
+        .then(function () { return { ok: true }; });
+    },
+    addComment: function (p) {
+      return rest('kanban_historico', { method: 'POST', prefer: 'return=minimal', body: { kanban_id: p.id, acao: 'comentou', por: p.por || nomeAtual(), detalhe: p.texto } })
+        .then(function () { return { ok: true }; });
+    },
+    finalize: function (p) {
+      return rest('kanbans?id=eq.' + p.id, { method: 'PATCH', body: { finalizado: true, motivo_final: p.motivo || '' }, prefer: 'return=minimal' })
+        .then(function () { return hist(p.id, 'finalizou', { por: p.por, detalhes: p.motivo || null }); })
+        .then(function () { return { ok: true }; });
+    },
+    autoFinalize: function (p) {
+      var ids = (p.cliente_ids || []).map(String), lotes = [];
+      for (var i = 0; i < ids.length; i += 80) lotes.push(ids.slice(i, i + 80));
+      var ativos = [];
+      return lotes.reduce(function (pr, l) {
+        return pr.then(function () {
+          var lista = l.map(function (x) { return '"' + x.replace(/"/g, '') + '"'; }).join(',');
+          return rest('kanbans?select=id,cliente_id&finalizado=eq.false&cliente_id=in.(' + enc(lista) + ')').then(function (r) { ativos = ativos.concat(r || []); });
+        });
+      }, Promise.resolve()).then(function () {
+        return ativos.reduce(function (pr, k) {
+          return pr.then(function () {
+            return rest('kanbans?id=eq.' + k.id, { method: 'PATCH', body: { finalizado: true, motivo_final: 'Cliente voltou a comprar' }, prefer: 'return=minimal' })
+              .then(function () { return hist(k.id, 'auto_finalizou', { por: 'Sistema', detalhes: 'Cliente voltou a comprar' }); });
+          });
+        }, Promise.resolve());
+      }).then(function () { return { ok: true, finalizados: ativos.length }; });
+    },
+    getHistory: function (p) {
+      return rest('kanban_historico?select=*&kanban_id=eq.' + (p.kanban_id || p.id) + '&order=em.desc').then(function (h) {
+        return { ok: true, historico: (h || []).map(function (x) {
+          return { id: x.id, acao: x.acao, por: x.por, de: x.de, para: x.para, detalhes: x.detalhe, quando: x.em };
+        }) };
+      });
+    },
+    logAccess: function (p) {
+      return rest('acessos', { method: 'POST', body: { usuario: p.usuario || nomeAtual(), origem: p.origem || 'crm' }, prefer: 'return=minimal' }).then(function () { return { ok: true }; });
+    },
+    getStats: function () {
+      var d30 = new Date(Date.now() - 30 * 864e5).toISOString();
+      return Promise.all([
+        rest('rpc/lista_usuarios', { method: 'POST', body: {}, anon: true }),
+        rest('acessos?select=usuario,em&order=em.desc&limit=20000'),
+        rest('kanban_historico?select=por,em&em=gt.' + enc(d30) + '&limit=20000'),
+        rest('kanbans?select=tags&finalizado=eq.false'),
+        rest('kanban_tags?select=nome,cor')
+      ]).then(function (r) {
+        var usuarios = r[0] || [], acessos = r[1] || [], hist30 = r[2] || [], ks = r[3] || [], tags = r[4] || [];
+        var hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+        var d7 = Date.now() - 7 * 864e5;
+        var uso = usuarios.map(function (u) {
+          var meus = acessos.filter(function (a) { return a.usuario === u.nome; });
+          return {
+            nome: u.nome, tipo: u.tipo,
+            ultimoLogin: meus.length ? meus[0].em : null,
+            totalLogins: meus.length,
+            loginsUltimos7d: meus.filter(function (a) { return new Date(a.em).getTime() >= d7; }).length,
+            loginsHoje: meus.filter(function (a) { return new Date(a.em) >= hoje; }).length,
+            acoesUltimos30d: hist30.filter(function (h) { return h.por === u.nome; }).length
+          };
+        });
+        var cont = {};
+        ks.forEach(function (k) { String(k.tags || '').split(';').filter(Boolean).forEach(function (t) { cont[t] = (cont[t] || 0) + 1; }); });
+        var cores = {}; tags.forEach(function (t) { cores[t.nome] = t.cor; });
+        var topTags = Object.keys(cont).map(function (n) { return { nome: n, cor: cores[n] || '#a855f7', count: cont[n] }; })
+          .sort(function (a, b) { return b.count - a.count; });
+        return { ok: true, uso: uso, topTags: topTags };
+      });
+    }
+  };
+
+  window.kanbanAPI = function (action, payload) {
+    var fn = acoes[action];
+    if (!fn) return Promise.resolve({ ok: false, error: 'Ação desconhecida: ' + action });
+    return Promise.resolve().then(function () { return fn(payload || {}); })
+      .catch(function (e) { return { ok: false, error: e.message || String(e) }; });
+  };
+
+  // ------------------------------------------------------------------
+  // MIGRAÇÃO ÚNICA: Kanbans/tags/histórico da planilha antiga -> Supabase
+  // ------------------------------------------------------------------
+  window.importarKanbansPlanilha = function (onProg) {
+    var old = function (action, payload) {
+      return fetch(OLD_API + '?action=' + action + '&payload=' + enc(JSON.stringify(payload || {})) + '&t=' + Date.now())
+        .then(function (r) { return r.json(); });
+    };
+    var res = { kanbans: 0, historico: 0, tags: 0, erros: 0 };
+    return Promise.all([old('getAll'), old('getTags')]).then(function (r) {
+      if (!r[0] || !r[0].ok) throw new Error('Não consegui ler a planilha antiga');
+      var antigos = r[0].kanbans || [], tags = (r[1] && r[1].tags) || [];
+      var pTags = tags.length ? rest('kanban_tags?on_conflict=nome', { method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal',
+        body: tags.map(function (t) { return { nome: t.nome, cor: t.cor || '#a855f7', ativo: true }; }) }).then(function () { res.tags = tags.length; }) : Promise.resolve();
+      var i = 0;
+      function proximo() {
+        if (i >= antigos.length) return Promise.resolve();
+        var k = antigos[i++];
+        if (onProg) onProg(i, antigos.length);
+        var fin = String(k.finalizado).toLowerCase() === 'sim' || k.finalizado === true;
+        return rest('kanbans', { method: 'POST', prefer: 'return=representation', body: {
+          cliente_id: String(k.cliente_id), cliente_nome: k.cliente_nome || 'Sem nome', cliente_cidade: k.cliente_cidade || '',
+          vendedor: String(k.vendedor || '').toUpperCase(), status: ['aberto', 'contato', 'retorno', 'perdido'].indexOf(k.status) >= 0 ? k.status : 'aberto',
+          tags: k.tags || '', faturamento_hist: Number(k.faturamento_hist) || 0, potencial_perdido: Number(k.potencial_perdido) || 0,
+          observacoes: k.observacoes || '', criado_por: k.criado_por || 'Planilha',
+          criado_em: k.criado_em || new Date().toISOString(),
+          finalizado: fin, motivo_final: k.motivo_final || k.motivo || null, finalizado_em: fin ? (k.finalizado_em || new Date().toISOString()) : null
+        } }).then(function (novo) {
+          res.kanbans++;
+          return old('getHistory', { kanban_id: k.id }).then(function (h) {
+            var itens = (h && h.historico) || [];
+            if (!itens.length) return;
+            return rest('kanban_historico', { method: 'POST', prefer: 'return=minimal', body: itens.map(function (x) {
+              return { kanban_id: novo[0].id, acao: x.acao || 'comentou', por: x.por || '?', de: x.de || null, para: x.para || null,
+                       detalhe: x.detalhes || null, em: x.quando || new Date().toISOString() };
+            }) }).then(function () { res.historico += itens.length; });
+          }).catch(function () {});
+        }, function () { res.erros++; }).then(proximo);
+      }
+      return pTags.then(proximo).then(function () { return res; });
+    });
+  };
+})();
+
+</script>
+<script>
+/* GERADO AUTOMATICAMENTE a partir do arquivo -fonte.html — edite o fonte */
+const {
+  useState,
+  useEffect,
+  useRef,
+  useMemo,
+  useCallback
+} = React;
 const STORAGE_KEY = 'peteca_vendedor_user';
-
-const STATUS = {
-  aberto:  { label: 'Aberto',           cor: '#60a5fa', corEscura: '#2563eb', emoji: '🔵' },
-  contato: { label: 'Em contato',       cor: '#4ade80', corEscura: '#16a34a', emoji: '🟢' },
-  retorno: { label: 'Retorno provável', cor: '#fb923c', corEscura: '#ea580c', emoji: '🟠' },
-  perdido: { label: 'Perdido',          cor: '#6b7280', corEscura: '#374151', emoji: '⚫' }
-};
-
-async function callAPI(action, payload = {}) {
-  try {
-    const url = API_URL + '?action=' + encodeURIComponent(action) + 
-                '&payload=' + encodeURIComponent(JSON.stringify(payload)) +
-                '&t=' + Date.now();
-    const res = await fetch(url);
-    return await res.json();
-  } catch (e) { return { ok: false, error: e.message }; }
+const MD_SEEDS = [{
+  nome: 'Azul',
+  cor: '#4f6bed'
+}, {
+  nome: 'Violeta',
+  cor: '#7c4dff'
+}, {
+  nome: 'Verde',
+  cor: '#2e9e5b'
+}, {
+  nome: 'Turquesa',
+  cor: '#00897b'
+}, {
+  nome: 'Laranja',
+  cor: '#f57c00'
+}, {
+  nome: 'Vermelho',
+  cor: '#d32f2f'
+}, {
+  nome: 'Rosa',
+  cor: '#d81b60'
+}, {
+  nome: 'Grafite',
+  cor: '#607d8b'
+}];
+function BotaoTrocarSenha() {
+  const [aberto, setAberto] = useState(false);
+  const [s1, setS1] = useState('');
+  const [s2, setS2] = useState('');
+  const [erro, setErro] = useState('');
+  const [ok, setOk] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const enviar = async () => {
+    if (s1.length < 8) return setErro('Use pelo menos 8 caracteres');
+    if (s1 !== s2) return setErro('As senhas não conferem');
+    setErro('');
+    setLoading(true);
+    try {
+      await window.PetecaSB.trocarSenha(s1);
+      setOk(true);
+      setTimeout(() => {
+        setAberto(false);
+        setOk(false);
+        setS1('');
+        setS2('');
+      }, 1500);
+    } catch (e) {
+      setErro(e.message);
+    }
+    setLoading(false);
+  };
+  const campo = {
+    width: '100%',
+    padding: '0 14px',
+    background: 'var(--md-s2)',
+    border: '1px solid var(--md-ol)',
+    color: 'var(--md-on)',
+    marginBottom: 10
+  };
+  return React.createElement(React.Fragment, null, React.createElement("button", {
+    onClick: () => setAberto(true),
+    title: "Trocar minha senha",
+    style: {
+      width: 40,
+      height: 40,
+      padding: 0,
+      background: 'var(--md-s4)',
+      border: '1px solid var(--md-ov)',
+      fontSize: 15
+    }
+  }, "\uD83D\uDD11"), aberto && ReactDOM.createPortal(React.createElement("div", {
+    onClick: () => !loading && setAberto(false),
+    style: {
+      position: 'fixed',
+      inset: 0,
+      background: 'rgba(0,0,0,0.7)',
+      zIndex: 3000,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 20
+    }
+  }, React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    style: {
+      width: '100%',
+      maxWidth: 380,
+      background: 'var(--md-s3)',
+      border: '1px solid var(--md-ov)',
+      borderRadius: 28,
+      padding: 24,
+      animation: 'scaleIn .2s'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 20,
+      fontWeight: 500,
+      color: 'var(--md-on)',
+      marginBottom: 4
+    }
+  }, "\uD83D\uDD11 Trocar senha"), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      marginBottom: 16
+    }
+  }, "Escolha uma senha que s\xF3 voc\xEA saiba (m\xEDnimo 8 caracteres)"), ok ? React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: '#86efac',
+      padding: '10px 0'
+    }
+  }, "\u2705 Senha alterada!") : React.createElement(React.Fragment, null, React.createElement("input", {
+    type: "password",
+    value: s1,
+    onChange: e => setS1(e.target.value),
+    placeholder: "Nova senha",
+    style: campo,
+    autoFocus: true
+  }), React.createElement("input", {
+    type: "password",
+    value: s2,
+    onChange: e => setS2(e.target.value),
+    onKeyDown: e => e.key === 'Enter' && enviar(),
+    placeholder: "Repita a nova senha",
+    style: campo
+  }), erro && React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: '#fca5a5',
+      marginBottom: 10
+    }
+  }, erro), React.createElement("div", {
+    style: {
+      display: 'flex',
+      justifyContent: 'flex-end',
+      gap: 8,
+      marginTop: 6
+    }
+  }, React.createElement("button", {
+    onClick: () => setAberto(false),
+    disabled: loading,
+    style: {
+      padding: '0 18px',
+      background: 'transparent',
+      border: '1px solid var(--md-ol)',
+      color: 'var(--md-onv)',
+      fontSize: 13
+    }
+  }, "Cancelar"), React.createElement("button", {
+    onClick: enviar,
+    disabled: loading,
+    style: {
+      padding: '0 20px',
+      background: 'var(--md-pc)',
+      border: 'none',
+      color: 'var(--md-onpc)',
+      fontSize: 13,
+      fontWeight: 600
+    }
+  }, loading ? 'Salvando...' : 'Salvar'))))), document.body));
 }
-
+function SeletorTema() {
+  const [seed, setSeed] = useState(() => {
+    try {
+      return localStorage.getItem('peteca_md_seed') || '#4f6bed';
+    } catch (e) {
+      return '#4f6bed';
+    }
+  });
+  const [aberto, setAberto] = useState(false);
+  useEffect(() => {
+    try {
+      localStorage.setItem('peteca_md_seed', seed);
+    } catch (e) {}
+    if (window.applyMdTheme) window.applyMdTheme(seed);
+  }, [seed]);
+  return React.createElement(React.Fragment, null, React.createElement("button", {
+    onClick: () => setAberto(v => !v),
+    title: "Cores do tema",
+    style: {
+      width: 40,
+      height: 40,
+      padding: 0,
+      background: 'var(--md-s4)',
+      border: '1px solid var(--md-ov)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center'
+    }
+  }, React.createElement("span", {
+    style: {
+      width: 18,
+      height: 18,
+      borderRadius: '50%',
+      background: 'var(--md-p55)',
+      boxShadow: '0 0 0 3px var(--md-pc)'
+    }
+  })), aberto && ReactDOM.createPortal(React.createElement(React.Fragment, null, React.createElement("div", {
+    onClick: () => setAberto(false),
+    style: {
+      position: 'fixed',
+      inset: 0,
+      zIndex: 2999
+    }
+  }), React.createElement("div", {
+    style: {
+      position: 'fixed',
+      top: 70,
+      right: 16,
+      width: 248,
+      background: 'var(--md-s4)',
+      border: '1px solid var(--md-ov)',
+      borderRadius: 28,
+      padding: 18,
+      boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+      zIndex: 3000,
+      animation: 'scaleIn .2s ease'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 500,
+      color: 'var(--md-on)',
+      marginBottom: 4
+    }
+  }, "Cores din\xE2micas"), React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--md-mut)',
+      marginBottom: 14
+    }
+  }, "O app inteiro se adapta \xE0 cor escolhida"), React.createElement("div", {
+    style: {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(4,1fr)',
+      gap: 10,
+      marginBottom: 14
+    }
+  }, MD_SEEDS.map(sd => React.createElement("button", {
+    key: sd.cor,
+    onClick: () => setSeed(sd.cor),
+    title: sd.nome,
+    style: {
+      width: 44,
+      height: 44,
+      minHeight: 44,
+      padding: 0,
+      background: sd.cor,
+      border: seed.toLowerCase() === sd.cor ? '3px solid var(--md-on)' : '3px solid transparent'
+    }
+  }))), React.createElement("label", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 10,
+      fontSize: 12,
+      color: 'var(--md-onv)',
+      cursor: 'pointer'
+    }
+  }, "Cor personalizada", React.createElement("input", {
+    type: "color",
+    value: seed,
+    onChange: e => setSeed(e.target.value),
+    style: {
+      width: 44,
+      height: 32,
+      border: 'none',
+      background: 'none',
+      cursor: 'pointer',
+      padding: 0
+    }
+  })))), document.body));
+}
+const STATUS = {
+  aberto: {
+    label: 'Aberto',
+    cor: '#60a5fa',
+    corEscura: '#2563eb',
+    emoji: '🔵'
+  },
+  contato: {
+    label: 'Em contato',
+    cor: '#4ade80',
+    corEscura: '#16a34a',
+    emoji: '🟢'
+  },
+  retorno: {
+    label: 'Retorno provável',
+    cor: '#fb923c',
+    corEscura: '#ea580c',
+    emoji: '🟠'
+  },
+  perdido: {
+    label: 'Perdido',
+    cor: '#6b7280',
+    corEscura: '#374151',
+    emoji: '⚫'
+  }
+};
+function callAPI(action, payload = {}) {
+  return window.kanbanAPI(action, payload);
+}
 function useToast() {
   const [toast, setToast] = useState(null);
-  const show = (msg, type='success') => {
-    setToast({ msg, type });
+  const show = (msg, type = 'success') => {
+    setToast({
+      msg,
+      type
+    });
     setTimeout(() => setToast(null), 3000);
   };
   return [toast, show];
 }
-
-function Toast({ toast }) {
+function Toast({
+  toast
+}) {
   if (!toast) return null;
   const cores = {
-    success: { bg: '#0d3320', border: '#16a34a', color: '#86efac' },
-    error:   { bg: '#7f1d1d', border: '#dc2626', color: '#fca5a5' },
-    warning: { bg: '#3a2d08', border: '#eab308', color: '#fde68a' }
+    success: {
+      bg: '#0d3320',
+      border: '#16a34a',
+      color: '#86efac'
+    },
+    error: {
+      bg: '#7f1d1d',
+      border: '#dc2626',
+      color: '#fca5a5'
+    },
+    warning: {
+      bg: '#3a2d08',
+      border: '#eab308',
+      color: '#fde68a'
+    }
   };
   const c = cores[toast.type] || cores.success;
-  return (
-    <div style={{position:'fixed',bottom:70,right:24,zIndex:2000,background:c.bg,border:`1px solid ${c.border}`,borderRadius:10,padding:'12px 20px',color:c.color,fontSize:13,fontWeight:500,animation:'slideUp .3s',boxShadow:'0 8px 30px rgba(0,0,0,0.4)'}}>{toast.msg}</div>
-  );
+  return React.createElement("div", {
+    style: {
+      position: 'fixed',
+      bottom: 70,
+      right: 24,
+      zIndex: 2000,
+      background: c.bg,
+      border: `1px solid ${c.border}`,
+      borderRadius: 14,
+      padding: '12px 20px',
+      color: c.color,
+      fontSize: 13,
+      fontWeight: 500,
+      animation: 'slideUp .3s',
+      boxShadow: '0 8px 30px rgba(0,0,0,0.4)'
+    }
+  }, toast.msg);
 }
-
 function App() {
   const [user, setUser] = useState(() => {
-    try { const saved = localStorage.getItem(STORAGE_KEY); return saved ? JSON.parse(saved) : null; } catch(e) { return null; }
+    return window.PetecaSB.logado() ? window.PetecaSB.perfil() : null;
   });
-  const handleLogin = (u) => { setUser(u); try { localStorage.setItem(STORAGE_KEY, JSON.stringify(u)); } catch(e) {} };
-  const handleLogout = () => { setUser(null); try { localStorage.removeItem(STORAGE_KEY); } catch(e) {} };
-  if (!user) return <LoginScreen onLogin={handleLogin} />;
-  return <Home user={user} onLogout={handleLogout} />;
+  useEffect(() => {
+    const f = () => setUser(null);
+    window.addEventListener('peteca-sessao-expirada', f);
+    return () => window.removeEventListener('peteca-sessao-expirada', f);
+  }, []);
+  const handleLogin = u => setUser(u);
+  const handleLogout = () => {
+    window.PetecaSB.logout().then(() => setUser(null));
+  };
+  if (!user) return React.createElement(LoginScreen, {
+    onLogin: handleLogin
+  });
+  return React.createElement(Home, {
+    user: user,
+    onLogout: handleLogout
+  });
 }
-
-function LoginScreen({ onLogin }) {
+function LoginScreen({
+  onLogin
+}) {
   const [usuarios, setUsuarios] = useState([]);
   const [loadingUsuarios, setLoadingUsuarios] = useState(true);
   const [nome, setNome] = useState('');
   const [senha, setSenha] = useState('');
   const [erro, setErro] = useState('');
   const [loading, setLoading] = useState(false);
-  
   useEffect(() => {
     callAPI('getUsuarios').then(res => {
       if (res.ok) setUsuarios(res.usuarios.filter(u => u.tipo === 'vendedor'));
       setLoadingUsuarios(false);
     });
   }, []);
-  
   const doLogin = async () => {
-    if (!nome || !senha) { setErro('Selecione seu nome e digite a senha'); return; }
-    setErro(''); setLoading(true);
-    const res = await callAPI('login', { nome, senha });
+    if (!nome || !senha) {
+      setErro('Selecione seu nome e digite a senha');
+      return;
+    }
+    setErro('');
+    setLoading(true);
+    const res = await callAPI('login', {
+      nome,
+      senha
+    });
     setLoading(false);
-    if (res.ok) onLogin(res.user);
-    else setErro(res.error || 'Erro ao fazer login');
+    if (res.ok) onLogin(res.user);else setErro(res.error || 'Erro ao fazer login');
   };
-  
-  return (
-    <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
-      <div style={{width:'100%',maxWidth:400,background:'rgba(13,21,38,0.75)',backdropFilter:'blur(24px) saturate(200%)',WebkitBackdropFilter:'blur(24px) saturate(200%)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:20,padding:32,boxShadow:'0 20px 60px rgba(0,0,0,0.4)',animation:'scaleIn .4s cubic-bezier(.4,0,.2,1)'}}>
-        <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:28}}>
-          <div style={{width:48,height:48,borderRadius:14,background:'linear-gradient(135deg,#6366f1 0%,#a855f7 50%,#ec4899 100%)',backgroundSize:'200% 200%',animation:'gradientShift 8s ease infinite',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,fontWeight:800,color:'#fff',boxShadow:'0 8px 24px rgba(99,102,241,0.4), inset 0 1px 0 rgba(255,255,255,0.2)',letterSpacing:-1}}>P</div>
-          <div>
-            <div style={{fontSize:20,fontWeight:800,letterSpacing:-0.5}}><span className="gradient-text">PETECA CRM</span></div>
-            <div style={{fontSize:10,color:'#64748b',letterSpacing:2,textTransform:'uppercase',marginTop:2,fontWeight:500}}>Portal do Vendedor</div>
-          </div>
-        </div>
-        <div style={{fontSize:14,color:'#94a3b8',marginBottom:24,lineHeight:1.5}}>Entre com seu usuário para acessar seu Kanban de recuperação.</div>
-        <div style={{marginBottom:16}}>
-          <label style={{fontSize:11,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,display:'block',marginBottom:6}}>Seu nome</label>
-          {loadingUsuarios ? (
-            <div style={{padding:'11px 14px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:10,color:'#64748b',fontSize:13,display:'flex',alignItems:'center',gap:10}}><span style={{display:'inline-block',width:12,height:12,border:'2px solid #64748b',borderTopColor:'transparent',borderRadius:'50%',animation:'spin 0.8s linear infinite'}}></span>Carregando...</div>
-          ) : (
-            <select value={nome} onChange={e => setNome(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') doLogin(); }} style={{width:'100%',padding:'11px 14px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:10,color:'#e2e8f0',fontSize:14,cursor:'pointer'}}>
-              <option value="">Selecione seu nome...</option>
-              {usuarios.map(u => <option key={u.nome} value={u.nome}>{u.nome}</option>)}
-            </select>
-          )}
-        </div>
-        <div style={{marginBottom:20}}>
-          <label style={{fontSize:11,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,display:'block',marginBottom:6}}>Senha</label>
-          <input type="password" value={senha} onChange={e => setSenha(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') doLogin(); }} placeholder="••••••••" style={{width:'100%',padding:'11px 14px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:10,color:'#e2e8f0',fontSize:14}} />
-        </div>
-        {erro && <div style={{background:'rgba(239,68,68,0.1)',border:'1px solid rgba(239,68,68,0.3)',borderRadius:8,padding:'10px 12px',color:'#fca5a5',fontSize:12,marginBottom:16,animation:'slideUp .2s'}}>⚠ {erro}</div>}
-        <button onClick={doLogin} disabled={loading} style={{width:'100%',padding:'13px',background:loading?'rgba(99,102,241,0.3)':'linear-gradient(135deg,#6366f1 0%,#a855f7 100%)',border:'none',borderRadius:10,color:'#fff',fontSize:14,fontWeight:700,letterSpacing:0.3,boxShadow:loading?'none':'0 8px 24px rgba(99,102,241,0.35)',display:'flex',alignItems:'center',justifyContent:'center',gap:10}}>
-          {loading ? <><span style={{display:'inline-block',width:14,height:14,border:'2px solid #fff',borderTopColor:'transparent',borderRadius:'50%',animation:'spin 0.8s linear infinite'}}></span>Entrando...</> : <>🔓 Entrar</>}
-        </button>
-        <div style={{marginTop:24,paddingTop:16,borderTop:'1px solid rgba(255,255,255,0.05)',fontSize:10,color:'#64748b',textAlign:'center',lineHeight:1.5}}>Esqueceu sua senha? Fale com o administrador.</div>
-      </div>
-    </div>
-  );
+  return React.createElement("div", {
+    style: {
+      minHeight: '100vh',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 20
+    }
+  }, React.createElement("div", {
+    style: {
+      width: '100%',
+      maxWidth: 400,
+      background: 'color-mix(in srgb,var(--md-s2) 75%,transparent)',
+      backdropFilter: 'blur(24px) saturate(200%)',
+      WebkitBackdropFilter: 'blur(24px) saturate(200%)',
+      border: '1px solid rgba(255,255,255,0.1)',
+      borderRadius: 28,
+      padding: 32,
+      boxShadow: '0 20px 60px rgba(0,0,0,0.4)',
+      animation: 'scaleIn .4s cubic-bezier(.4,0,.2,1)'
+    }
+  }, React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 14,
+      marginBottom: 28
+    }
+  }, React.createElement("div", {
+    style: {
+      width: 48,
+      height: 48,
+      borderRadius: 20,
+      background: 'linear-gradient(135deg,var(--md-p55) 0%,var(--md-t60) 50%,#ec4899 100%)',
+      backgroundSize: '200% 200%',
+      animation: 'gradientShift 8s ease infinite',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      fontSize: 22,
+      fontWeight: 800,
+      color: '#fff',
+      boxShadow: '0 8px 24px color-mix(in srgb,var(--md-p55) 40%,transparent), inset 0 1px 0 rgba(255,255,255,0.2)',
+      letterSpacing: -1
+    }
+  }, "P"), React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 20,
+      fontWeight: 800,
+      letterSpacing: -0.5
+    }
+  }, React.createElement("span", {
+    className: "gradient-text"
+  }, "PETECA CRM")), React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--md-mut)',
+      letterSpacing: 2,
+      textTransform: 'uppercase',
+      marginTop: 2,
+      fontWeight: 500
+    }
+  }, "Portal do Vendedor"))), React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: 'var(--md-onv)',
+      marginBottom: 24,
+      lineHeight: 1.5
+    }
+  }, "Entre com seu usu\xE1rio para acessar seu Kanban de recupera\xE7\xE3o."), React.createElement("div", {
+    style: {
+      marginBottom: 16
+    }
+  }, React.createElement("label", {
+    style: {
+      fontSize: 11,
+      color: 'var(--md-mut)',
+      textTransform: 'uppercase',
+      letterSpacing: 1,
+      fontWeight: 600,
+      display: 'block',
+      marginBottom: 6
+    }
+  }, "Seu nome"), loadingUsuarios ? React.createElement("div", {
+    style: {
+      padding: '11px 14px',
+      background: 'rgba(255,255,255,0.02)',
+      border: '1px solid rgba(255,255,255,0.06)',
+      borderRadius: 14,
+      color: 'var(--md-mut)',
+      fontSize: 13,
+      display: 'flex',
+      alignItems: 'center',
+      gap: 10
+    }
+  }, React.createElement("span", {
+    style: {
+      display: 'inline-block',
+      width: 12,
+      height: 12,
+      border: '2px solid var(--md-mut)',
+      borderTopColor: 'transparent',
+      borderRadius: '50%',
+      animation: 'spin 0.8s linear infinite'
+    }
+  }), "Carregando...") : React.createElement("select", {
+    value: nome,
+    onChange: e => setNome(e.target.value),
+    onKeyDown: e => {
+      if (e.key === 'Enter') doLogin();
+    },
+    style: {
+      width: '100%',
+      padding: '11px 14px',
+      background: 'rgba(255,255,255,0.02)',
+      border: '1px solid rgba(255,255,255,0.1)',
+      borderRadius: 14,
+      color: 'var(--md-on)',
+      fontSize: 14,
+      cursor: 'pointer'
+    }
+  }, React.createElement("option", {
+    value: ""
+  }, "Selecione seu nome..."), usuarios.map(u => React.createElement("option", {
+    key: u.nome,
+    value: u.nome
+  }, u.nome)))), React.createElement("div", {
+    style: {
+      marginBottom: 20
+    }
+  }, React.createElement("label", {
+    style: {
+      fontSize: 11,
+      color: 'var(--md-mut)',
+      textTransform: 'uppercase',
+      letterSpacing: 1,
+      fontWeight: 600,
+      display: 'block',
+      marginBottom: 6
+    }
+  }, "Senha"), React.createElement("input", {
+    type: "password",
+    value: senha,
+    onChange: e => setSenha(e.target.value),
+    onKeyDown: e => {
+      if (e.key === 'Enter') doLogin();
+    },
+    placeholder: "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022",
+    style: {
+      width: '100%',
+      padding: '11px 14px',
+      background: 'rgba(255,255,255,0.02)',
+      border: '1px solid rgba(255,255,255,0.1)',
+      borderRadius: 14,
+      color: 'var(--md-on)',
+      fontSize: 14
+    }
+  })), erro && React.createElement("div", {
+    style: {
+      background: 'rgba(239,68,68,0.1)',
+      border: '1px solid rgba(239,68,68,0.3)',
+      borderRadius: 12,
+      padding: '10px 12px',
+      color: '#fca5a5',
+      fontSize: 12,
+      marginBottom: 16,
+      animation: 'slideUp .2s'
+    }
+  }, "\u26A0 ", erro), React.createElement("button", {
+    onClick: doLogin,
+    disabled: loading,
+    style: {
+      width: '100%',
+      padding: '13px',
+      background: loading ? 'color-mix(in srgb,var(--md-p55) 30%,transparent)' : 'var(--md-p55)',
+      border: 'none',
+      borderRadius: 14,
+      color: '#fff',
+      fontSize: 14,
+      fontWeight: 700,
+      letterSpacing: 0.3,
+      boxShadow: loading ? 'none' : '0 8px 24px color-mix(in srgb,var(--md-p55) 35%,transparent)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 10
+    }
+  }, loading ? React.createElement(React.Fragment, null, React.createElement("span", {
+    style: {
+      display: 'inline-block',
+      width: 14,
+      height: 14,
+      border: '2px solid #fff',
+      borderTopColor: 'transparent',
+      borderRadius: '50%',
+      animation: 'spin 0.8s linear infinite'
+    }
+  }), "Entrando...") : React.createElement(React.Fragment, null, "\uD83D\uDD13 Entrar")), React.createElement("div", {
+    style: {
+      marginTop: 24,
+      paddingTop: 16,
+      borderTop: '1px solid rgba(255,255,255,0.05)',
+      fontSize: 10,
+      color: 'var(--md-mut)',
+      textAlign: 'center',
+      lineHeight: 1.5
+    }
+  }, "Esqueceu sua senha? Fale com o administrador.")));
 }
-
-function Home({ user, onLogout }) {
+function Home({
+  user,
+  onLogout
+}) {
   const [kanbans, setKanbans] = useState([]);
   const [loading, setLoading] = useState(true);
   const [lastSync, setLastSync] = useState(null);
   const [selectedKanban, setSelectedKanban] = useState(null);
   const [toast, showToast] = useToast();
   const [tags, setTags] = useState([]);
-  
   const loadKanbans = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
-    const res = await callAPI('getByVendedor', { vendedor: user.nome });
-    if (res.ok) { setKanbans(res.kanbans); setLastSync(Date.now()); }
-    else if (!silent) showToast('Erro ao carregar: ' + (res.error || 'desconhecido'), 'error');
+    const res = await callAPI('getByVendedor', {
+      vendedor: user.nome
+    });
+    if (res.ok) {
+      setKanbans(res.kanbans);
+      setLastSync(Date.now());
+    } else if (!silent) showToast('Erro ao carregar: ' + (res.error || 'desconhecido'), 'error');
     if (!silent) setLoading(false);
   }, [user.nome]);
-  
   const loadTags = useCallback(async () => {
     const res = await callAPI('getTags');
     if (res.ok) setTags(res.tags);
   }, []);
-  
-  useEffect(() => { loadKanbans(); loadTags(); }, [loadKanbans, loadTags]);
-  
   useEffect(() => {
-    const interval = setInterval(() => { if (!document.hidden) loadKanbans(true); }, 120000);
+    loadKanbans();
+    loadTags();
+  }, [loadKanbans, loadTags]);
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (!document.hidden) loadKanbans(true);
+    }, 120000);
     return () => clearInterval(interval);
   }, [loadKanbans]);
-  
-  // FASE A: Polling a cada 30s pra detectar novos Kanbans criados
   const lastCheckRef = useRef(new Date().toISOString());
   const [novosCount, setNovosCount] = useState(0);
   useEffect(() => {
     const checkNovos = async () => {
       if (document.hidden) return;
-      const res = await callAPI('hasNewKanbans', { vendedor: user.nome, desde: lastCheckRef.current });
+      const res = await callAPI('hasNewKanbans', {
+        vendedor: user.nome,
+        desde: lastCheckRef.current
+      });
       if (res.ok && res.novos && res.novos.length > 0) {
         const count = res.novos.length;
         setNovosCount(prev => prev + count);
-        // Tocar som de notificação
         try {
           const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
           const osc = audioCtx.createOscillator();
           const gain = audioCtx.createGain();
-          osc.connect(gain); gain.connect(audioCtx.destination);
+          osc.connect(gain);
+          gain.connect(audioCtx.destination);
           osc.frequency.setValueAtTime(880, audioCtx.currentTime);
           osc.frequency.setValueAtTime(1100, audioCtx.currentTime + 0.08);
           gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
           gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.25);
           osc.start(audioCtx.currentTime);
           osc.stop(audioCtx.currentTime + 0.25);
-        } catch(e) {}
-        showToast(`📬 ${count === 1 ? 'Novo cliente no seu Kanban' : count + ' novos clientes no seu Kanban'}: ${res.novos.map(n => n.cliente_nome).slice(0,2).join(', ')}${count > 2 ? '...' : ''}`);
+        } catch (e) {}
+        showToast(`📬 ${count === 1 ? 'Novo cliente no seu Kanban' : count + ' novos clientes no seu Kanban'}: ${res.novos.map(n => n.cliente_nome).slice(0, 2).join(', ')}${count > 2 ? '...' : ''}`);
         lastCheckRef.current = new Date().toISOString();
-        loadKanbans(true); // recarrega pra mostrar as novas bolinhas
+        loadKanbans(true);
       }
     };
-    const interval = setInterval(checkNovos, 30000); // 30s
+    const interval = setInterval(checkNovos, 30000);
     return () => clearInterval(interval);
-  // eslint-disable-next-line
   }, [user.nome]);
-  
-  // FASE A: Badge no título da aba quando tem novos
   useEffect(() => {
     const baseTitle = 'CRM PETECA — ' + user.nome;
     if (novosCount > 0) {
@@ -234,8 +1274,6 @@ function Home({ user, onLogout }) {
       document.title = baseTitle;
     }
   }, [novosCount, user.nome]);
-  
-  // FASE A: Limpar badge quando usuário volta à aba
   useEffect(() => {
     const onVisibility = () => {
       if (!document.hidden && novosCount > 0) {
@@ -246,151 +1284,344 @@ function Home({ user, onLogout }) {
     document.addEventListener('visibilitychange', onVisibility);
     return () => document.removeEventListener('visibilitychange', onVisibility);
   }, [novosCount]);
-  
   const stats = useMemo(() => {
-    const s = { total:0, aberto:0, contato:0, retorno:0, perdido:0 };
-    kanbans.forEach(k => { s.total++; if (s[k.status] !== undefined) s[k.status]++; });
+    const s = {
+      total: 0,
+      aberto: 0,
+      contato: 0,
+      retorno: 0,
+      perdido: 0
+    };
+    kanbans.forEach(k => {
+      s.total++;
+      if (s[k.status] !== undefined) s[k.status]++;
+    });
     return s;
   }, [kanbans]);
-  
   const atualizarKanban = (id, changes) => {
-    setKanbans(prev => prev.map(k => k.id === id ? {...k, ...changes} : k));
+    setKanbans(prev => prev.map(k => k.id === id ? {
+      ...k,
+      ...changes
+    } : k));
   };
-  
   const handleUpdateStatus = async (id, novoStatus) => {
-    atualizarKanban(id, { status: novoStatus });
-    const res = await callAPI('updateStatus', { id, novoStatus, por: user.nome });
-    if (res.ok) showToast(`Movido para ${STATUS[novoStatus].label}`);
-    else { showToast('Erro ao salvar', 'error'); loadKanbans(); }
+    atualizarKanban(id, {
+      status: novoStatus
+    });
+    const res = await callAPI('updateStatus', {
+      id,
+      novoStatus,
+      por: user.nome
+    });
+    if (res.ok) showToast(`Movido para ${STATUS[novoStatus].label}`);else {
+      showToast('Erro ao salvar', 'error');
+      loadKanbans();
+    }
   };
-  
   const handleUpdateTags = async (id, novasTags) => {
-    atualizarKanban(id, { tags: novasTags.join(';') });
-    const res = await callAPI('updateTags', { id, tags: novasTags, por: user.nome });
-    if (res.ok) showToast('Tags atualizadas');
-    else { showToast('Erro ao salvar', 'error'); loadKanbans(); }
+    atualizarKanban(id, {
+      tags: novasTags.join(';')
+    });
+    const res = await callAPI('updateTags', {
+      id,
+      tags: novasTags,
+      por: user.nome
+    });
+    if (res.ok) showToast('Tags atualizadas');else {
+      showToast('Erro ao salvar', 'error');
+      loadKanbans();
+    }
   };
-  
   const handleAddComment = async (id, texto) => {
-    const res = await callAPI('addComment', { id, texto, por: user.nome });
-    if (res.ok) showToast('Comentário adicionado');
-    else showToast('Erro ao salvar', 'error');
+    const res = await callAPI('addComment', {
+      id,
+      texto,
+      por: user.nome
+    });
+    if (res.ok) showToast('Comentário adicionado');else showToast('Erro ao salvar', 'error');
     return res.ok;
   };
-  
-  return (
-    <div style={{minHeight:'100vh',display:'flex',flexDirection:'column'}}>
-      <Header user={user} onLogout={onLogout} stats={stats} lastSync={lastSync} onRefresh={() => loadKanbans()} loading={loading} />
-      {loading ? (
-        <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center'}}>
-          <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:12}}>
-            <div style={{width:40,height:40,border:'3px solid rgba(99,102,241,0.2)',borderTopColor:'#6366f1',borderRadius:'50%',animation:'spin 1s linear infinite'}}></div>
-            <div style={{fontSize:13,color:'#64748b'}}>Carregando seu Kanban...</div>
-          </div>
-        </div>
-      ) : kanbans.length === 0 ? (
-        <EmptyState userName={user.nome} />
-      ) : (
-        <KanbanField kanbans={kanbans} onSelectKanban={setSelectedKanban} />
-      )}
-      <Legenda />
-      {selectedKanban && (
-        <KanbanModal 
-          kanban={kanbans.find(k => k.id === selectedKanban)}
-          onClose={() => setSelectedKanban(null)}
-          onUpdateStatus={handleUpdateStatus}
-          onUpdateTags={handleUpdateTags}
-          onAddComment={handleAddComment}
-          tags={tags}
-          user={user}
-        />
-      )}
-      <Toast toast={toast} />
-    </div>
-  );
+  return React.createElement("div", {
+    style: {
+      minHeight: '100vh',
+      display: 'flex',
+      flexDirection: 'column'
+    }
+  }, React.createElement(Header, {
+    user: user,
+    onLogout: onLogout,
+    stats: stats,
+    lastSync: lastSync,
+    onRefresh: () => loadKanbans(),
+    loading: loading
+  }), loading ? React.createElement("div", {
+    style: {
+      flex: 1,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center'
+    }
+  }, React.createElement("div", {
+    style: {
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      gap: 12
+    }
+  }, React.createElement("div", {
+    style: {
+      width: 40,
+      height: 40,
+      border: '3px solid color-mix(in srgb,var(--md-p55) 20%,transparent)',
+      borderTopColor: 'var(--md-p55)',
+      borderRadius: '50%',
+      animation: 'spin 1s linear infinite'
+    }
+  }), React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: 'var(--md-mut)'
+    }
+  }, "Carregando seu Kanban..."))) : kanbans.length === 0 ? React.createElement(EmptyState, {
+    userName: user.nome
+  }) : React.createElement(KanbanField, {
+    kanbans: kanbans,
+    onSelectKanban: setSelectedKanban
+  }), React.createElement(Legenda, null), selectedKanban && React.createElement(KanbanModal, {
+    kanban: kanbans.find(k => k.id === selectedKanban),
+    onClose: () => setSelectedKanban(null),
+    onUpdateStatus: handleUpdateStatus,
+    onUpdateTags: handleUpdateTags,
+    onAddComment: handleAddComment,
+    tags: tags,
+    user: user
+  }), React.createElement(Toast, {
+    toast: toast
+  }));
 }
-
-function Header({ user, onLogout, stats, lastSync, onRefresh, loading }) {
+function Header({
+  user,
+  onLogout,
+  stats,
+  lastSync,
+  onRefresh,
+  loading
+}) {
   const minsAgo = lastSync ? Math.floor((Date.now() - lastSync) / 60000) : null;
-  return (
-    <div style={{background:'rgba(13,21,38,0.85)',backdropFilter:'blur(24px) saturate(200%)',WebkitBackdropFilter:'blur(24px) saturate(200%)',borderBottom:'1px solid rgba(99,102,241,0.15)',padding:'12px 20px',display:'flex',alignItems:'center',justifyContent:'space-between',position:'sticky',top:0,zIndex:50,flexWrap:'wrap',gap:12}}>
-      <div style={{display:'flex',alignItems:'center',gap:14}}>
-        <div style={{width:40,height:40,borderRadius:10,background:'linear-gradient(135deg,#6366f1 0%,#a855f7 50%,#ec4899 100%)',backgroundSize:'200% 200%',animation:'gradientShift 8s ease infinite',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,fontWeight:800,color:'#fff',boxShadow:'0 4px 16px rgba(99,102,241,0.4), inset 0 1px 0 rgba(255,255,255,0.2)'}}>P</div>
-        <div>
-          <div style={{fontSize:15,fontWeight:800,letterSpacing:-0.3}}>
-            <span className="gradient-text">Kanban</span>
-            <span style={{color:'#64748b',fontWeight:600}}> • {user.nome}</span>
-          </div>
-          <div style={{fontSize:10,color:'#64748b',letterSpacing:1,marginTop:1}}>
-            {stats.total} clientes • {stats.total - stats.perdido} ativos
-            {minsAgo !== null && <span> • Sync {minsAgo === 0 ? '<1min' : minsAgo+'min'} atrás</span>}
-          </div>
-        </div>
-      </div>
-      <div style={{display:'flex',alignItems:'center',gap:8}}>
-        <button onClick={onRefresh} disabled={loading} style={{background:'rgba(99,102,241,0.08)',border:'1px solid rgba(99,102,241,0.2)',borderRadius:10,padding:'7px 12px',color:'#c4b5fd',fontSize:12,fontWeight:500,display:'flex',alignItems:'center',gap:6}}>
-          <span style={{display:'inline-block',animation:loading?'spin 1s linear infinite':'none'}}>🔄</span>
-          <span>Atualizar</span>
-        </button>
-        <button onClick={onLogout} style={{background:'rgba(239,68,68,0.08)',border:'1px solid rgba(239,68,68,0.25)',borderRadius:10,padding:'7px 14px',color:'#fca5a5',fontSize:12,fontWeight:600}}>⎋ Sair</button>
-      </div>
-    </div>
-  );
+  return React.createElement("div", {
+    style: {
+      background: 'color-mix(in srgb,var(--md-s2) 85%,transparent)',
+      backdropFilter: 'blur(24px) saturate(200%)',
+      WebkitBackdropFilter: 'blur(24px) saturate(200%)',
+      borderBottom: '1px solid color-mix(in srgb,var(--md-p55) 15%,transparent)',
+      padding: '12px 20px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      position: 'sticky',
+      top: 0,
+      zIndex: 50,
+      flexWrap: 'wrap',
+      gap: 12
+    }
+  }, React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 14
+    }
+  }, React.createElement("div", {
+    style: {
+      width: 40,
+      height: 40,
+      borderRadius: 14,
+      background: 'linear-gradient(135deg,var(--md-p55) 0%,var(--md-t60) 50%,#ec4899 100%)',
+      backgroundSize: '200% 200%',
+      animation: 'gradientShift 8s ease infinite',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      fontSize: 18,
+      fontWeight: 800,
+      color: '#fff',
+      boxShadow: '0 4px 16px color-mix(in srgb,var(--md-p55) 40%,transparent), inset 0 1px 0 rgba(255,255,255,0.2)'
+    }
+  }, "P"), React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 800,
+      letterSpacing: -0.3
+    }
+  }, React.createElement("span", {
+    className: "gradient-text"
+  }, "Kanban"), React.createElement("span", {
+    style: {
+      color: 'var(--md-mut)',
+      fontWeight: 600
+    }
+  }, " \u2022 ", user.nome)), React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--md-mut)',
+      letterSpacing: 1,
+      marginTop: 1
+    }
+  }, stats.total, " clientes \u2022 ", stats.total - stats.perdido, " ativos", minsAgo !== null && React.createElement("span", null, " \u2022 Sync ", minsAgo === 0 ? '<1min' : minsAgo + 'min', " atr\xE1s")))), React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8
+    }
+  }, React.createElement(SeletorTema, null), React.createElement(BotaoTrocarSenha, null), React.createElement("button", {
+    onClick: onRefresh,
+    disabled: loading,
+    style: {
+      background: 'color-mix(in srgb,var(--md-p55) 8%,transparent)',
+      border: '1px solid color-mix(in srgb,var(--md-p55) 20%,transparent)',
+      borderRadius: 14,
+      padding: '7px 12px',
+      color: 'var(--md-t85)',
+      fontSize: 12,
+      fontWeight: 500,
+      display: 'flex',
+      alignItems: 'center',
+      gap: 6
+    }
+  }, React.createElement("span", {
+    style: {
+      display: 'inline-block',
+      animation: loading ? 'spin 1s linear infinite' : 'none'
+    }
+  }, "\uD83D\uDD04"), React.createElement("span", null, "Atualizar")), React.createElement("button", {
+    onClick: onLogout,
+    style: {
+      background: 'rgba(239,68,68,0.08)',
+      border: '1px solid rgba(239,68,68,0.25)',
+      borderRadius: 14,
+      padding: '7px 14px',
+      color: '#fca5a5',
+      fontSize: 12,
+      fontWeight: 600
+    }
+  }, "\u238B Sair")));
 }
-
-function EmptyState({ userName }) {
-  return (
-    <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:40}}>
-      <div style={{maxWidth:440,textAlign:'center',background:'rgba(20,28,48,0.6)',backdropFilter:'blur(20px) saturate(180%)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:20,padding:40,animation:'scaleIn .4s'}}>
-        <div style={{fontSize:64,marginBottom:20}}>🎯</div>
-        <div style={{fontSize:20,fontWeight:800,marginBottom:8,letterSpacing:-0.5}}>
-          Seu Kanban está vazio, <span className="gradient-text">{userName}</span>!
-        </div>
-        <div style={{fontSize:13,color:'#94a3b8',lineHeight:1.6}}>Quando o administrador encaminhar clientes pra você, as bolinhas vão aparecer aqui flutuando.</div>
-      </div>
-    </div>
-  );
+function EmptyState({
+  userName
+}) {
+  return React.createElement("div", {
+    style: {
+      flex: 1,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 40
+    }
+  }, React.createElement("div", {
+    style: {
+      maxWidth: 440,
+      textAlign: 'center',
+      background: 'color-mix(in srgb,var(--md-s4) 60%,transparent)',
+      backdropFilter: 'blur(20px) saturate(180%)',
+      border: '1px solid rgba(255,255,255,0.08)',
+      borderRadius: 28,
+      padding: 40,
+      animation: 'scaleIn .4s'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 64,
+      marginBottom: 20
+    }
+  }, "\uD83C\uDFAF"), React.createElement("div", {
+    style: {
+      fontSize: 20,
+      fontWeight: 800,
+      marginBottom: 8,
+      letterSpacing: -0.5
+    }
+  }, "Seu Kanban est\xE1 vazio, ", React.createElement("span", {
+    className: "gradient-text"
+  }, userName), "!"), React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: 'var(--md-onv)',
+      lineHeight: 1.6
+    }
+  }, "Quando o administrador encaminhar clientes pra voc\xEA, as bolinhas v\xE3o aparecer aqui flutuando.")));
 }
-
 function Legenda() {
-  return (
-    <div style={{position:'fixed',bottom:14,left:'50%',transform:'translateX(-50%)',background:'rgba(13,21,38,0.85)',backdropFilter:'blur(16px)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:100,padding:'8px 18px',display:'flex',alignItems:'center',gap:18,fontSize:11,color:'#94a3b8',fontWeight:500,zIndex:40,boxShadow:'0 8px 24px rgba(0,0,0,0.3)',flexWrap:'wrap',justifyContent:'center',maxWidth:'calc(100vw - 40px)'}}>
-      {Object.entries(STATUS).map(([key, s]) => (
-        <div key={key} style={{display:'flex',alignItems:'center',gap:6}}>
-          <span style={{width:10,height:10,borderRadius:'50%',background:s.cor,boxShadow:`0 0 8px ${s.cor}80`}}></span>
-          <span>{s.label}</span>
-        </div>
-      ))}
-    </div>
-  );
+  return React.createElement("div", {
+    style: {
+      position: 'fixed',
+      bottom: 14,
+      left: '50%',
+      transform: 'translateX(-50%)',
+      background: 'color-mix(in srgb,var(--md-s2) 85%,transparent)',
+      backdropFilter: 'blur(16px)',
+      border: '1px solid rgba(255,255,255,0.08)',
+      borderRadius: 100,
+      padding: '8px 18px',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 18,
+      fontSize: 11,
+      color: 'var(--md-onv)',
+      fontWeight: 500,
+      zIndex: 40,
+      boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+      flexWrap: 'wrap',
+      justifyContent: 'center',
+      maxWidth: 'calc(100vw - 40px)'
+    }
+  }, Object.entries(STATUS).map(([key, s]) => React.createElement("div", {
+    key: key,
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 6
+    }
+  }, React.createElement("span", {
+    style: {
+      width: 10,
+      height: 10,
+      borderRadius: '50%',
+      background: s.cor,
+      boxShadow: `0 0 8px ${s.cor}80`
+    }
+  }), React.createElement("span", null, s.label))));
 }
-
-function KanbanField({ kanbans, onSelectKanban }) {
+function KanbanField({
+  kanbans,
+  onSelectKanban
+}) {
   const containerRef = useRef(null);
-  const [dimensions, setDimensions] = useState({ w: 800, h: 600 });
+  const [dimensions, setDimensions] = useState({
+    w: 800,
+    h: 600
+  });
   const particlesRef = useRef({});
   const draggingRef = useRef(null);
   const [, setTick] = useState(0);
-  
-  const calcSize = (potencial) => {
+  const calcSize = potencial => {
     const p = Math.max(0, Number(potencial) || 0);
     if (p === 0) return 42;
     const size = 30 + Math.log10(p + 1) * 14;
     return Math.max(42, Math.min(130, size));
   };
-  
   useEffect(() => {
     const updateDim = () => {
       if (containerRef.current) {
         const r = containerRef.current.getBoundingClientRect();
-        setDimensions({ w: r.width, h: r.height });
+        setDimensions({
+          w: r.width,
+          h: r.height
+        });
       }
     };
     updateDim();
     window.addEventListener('resize', updateDim);
     return () => window.removeEventListener('resize', updateDim);
   }, []);
-  
   useEffect(() => {
     const atuais = new Set(kanbans.map(k => k.id));
     Object.keys(particlesRef.current).forEach(id => {
@@ -399,7 +1630,6 @@ function KanbanField({ kanbans, onSelectKanban }) {
     kanbans.forEach(k => {
       if (!particlesRef.current[k.id]) {
         const isPerdido = k.status === 'perdido';
-        // Velocidade inicial mais energética
         const angle = Math.random() * Math.PI * 2;
         const speed = isPerdido ? 1.2 : 2.5;
         particlesRef.current[k.id] = {
@@ -408,7 +1638,6 @@ function KanbanField({ kanbans, onSelectKanban }) {
           vx: Math.cos(angle) * speed,
           vy: Math.sin(angle) * speed,
           r: calcSize(k.potencial_perdido) / 2,
-          // Massa proporcional à área (bolinhas maiores empurram mais)
           m: Math.pow(calcSize(k.potencial_perdido) / 2, 2)
         };
       } else {
@@ -417,49 +1646,40 @@ function KanbanField({ kanbans, onSelectKanban }) {
       }
     });
   }, [kanbans, dimensions]);
-  
   useEffect(() => {
     let running = true;
     const kanbansMap = {};
-    kanbans.forEach(k => { kanbansMap[k.id] = k; });
-    
+    kanbans.forEach(k => {
+      kanbansMap[k.id] = k;
+    });
     const tickFn = () => {
       if (!running) return;
       const parts = particlesRef.current;
       const ids = Object.keys(parts);
-      const { w, h } = dimensions;
+      const {
+        w,
+        h
+      } = dimensions;
       const perdidosLimite = h * 0.7;
-      
       ids.forEach(id => {
         const p = parts[id];
         if (!p) return;
         if (draggingRef.current?.id === id) return;
-        
         const kanban = kanbansMap[id];
         const isPerdido = kanban?.status === 'perdido';
-        
-        // Movimento
         p.x += p.vx;
         p.y += p.vy;
-        
-        // Amortecimento MUITO LEVE (quase nada) — mantém velocidade como bilhar
         const drag = isPerdido ? 0.995 : 0.998;
         p.vx *= drag;
         p.vy *= drag;
-        
-        // Empurrãozinho constante pra manter em movimento
         if (Math.random() < 0.08) {
           const force = isPerdido ? 0.35 : 0.6;
           p.vx += (Math.random() - 0.5) * force;
           p.vy += (Math.random() - 0.5) * force;
         }
-        
-        // Atração suave pra zona do status
         if (isPerdido && p.y < perdidosLimite) p.vy += 0.12;
         if (!isPerdido && p.y > perdidosLimite - 20) p.vy -= 0.15;
-        
-        // Velocidade MÍNIMA (pra nunca parar de verdade)
-        const vAtual = Math.sqrt(p.vx*p.vx + p.vy*p.vy);
+        const vAtual = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
         const vMin = isPerdido ? 0.4 : 0.8;
         if (vAtual < vMin) {
           if (vAtual > 0.01) {
@@ -467,63 +1687,57 @@ function KanbanField({ kanbans, onSelectKanban }) {
             p.vx *= boost;
             p.vy *= boost;
           } else {
-            // Praticamente parada → dar empurrão aleatório forte
             const ang = Math.random() * Math.PI * 2;
             p.vx = Math.cos(ang) * vMin;
             p.vy = Math.sin(ang) * vMin;
           }
         }
-        
-        // Velocidade MÁXIMA (pra não virar foguete)
         const maxV = isPerdido ? 2.8 : 4.5;
         if (vAtual > maxV) {
-          p.vx = (p.vx / vAtual) * maxV;
-          p.vy = (p.vy / vAtual) * maxV;
+          p.vx = p.vx / vAtual * maxV;
+          p.vy = p.vy / vAtual * maxV;
         }
-        
-        // Colisão com bordas — REBATIMENTO QUASE ELÁSTICO (mantém energia)
-        if (p.x - p.r < 10) { p.x = p.r + 10; p.vx = Math.abs(p.vx) * 0.95; }
-        if (p.x + p.r > w - 10) { p.x = w - p.r - 10; p.vx = -Math.abs(p.vx) * 0.95; }
-        if (p.y - p.r < 10) { p.y = p.r + 10; p.vy = Math.abs(p.vy) * 0.95; }
-        if (p.y + p.r > h - 10) { p.y = h - p.r - 10; p.vy = -Math.abs(p.vy) * 0.95; }
+        if (p.x - p.r < 10) {
+          p.x = p.r + 10;
+          p.vx = Math.abs(p.vx) * 0.95;
+        }
+        if (p.x + p.r > w - 10) {
+          p.x = w - p.r - 10;
+          p.vx = -Math.abs(p.vx) * 0.95;
+        }
+        if (p.y - p.r < 10) {
+          p.y = p.r + 10;
+          p.vy = Math.abs(p.vy) * 0.95;
+        }
+        if (p.y + p.r > h - 10) {
+          p.y = h - p.r - 10;
+          p.vy = -Math.abs(p.vy) * 0.95;
+        }
       });
-      
-      // Colisão entre bolinhas — ELÁSTICA 2D com massa (física real de bilhar)
       for (let i = 0; i < ids.length; i++) {
-        for (let j = i+1; j < ids.length; j++) {
+        for (let j = i + 1; j < ids.length; j++) {
           const a = parts[ids[i]];
           const b = parts[ids[j]];
           if (!a || !b) continue;
           const dx = b.x - a.x;
           const dy = b.y - a.y;
-          const dist = Math.sqrt(dx*dx + dy*dy);
+          const dist = Math.sqrt(dx * dx + dy * dy);
           const minDist = a.r + b.r + 2;
           if (dist < minDist && dist > 0.01) {
-            // Separação (resolução de overlap)
             const overlap = minDist - dist;
             const nx = dx / dist;
             const ny = dy / dist;
-            // Separação proporcional à massa (bolinhas pequenas empurradas mais)
             const totalMass = a.m + b.m;
             a.x -= nx * overlap * (b.m / totalMass);
             a.y -= ny * overlap * (b.m / totalMass);
             b.x += nx * overlap * (a.m / totalMass);
             b.y += ny * overlap * (a.m / totalMass);
-            
-            // Colisão elástica 2D (conservação de momento)
-            // Velocidades ao longo da normal
             const van = a.vx * nx + a.vy * ny;
             const vbn = b.vx * nx + b.vy * ny;
-            
-            // Só processa se estão se aproximando (van > vbn significa afastando)
             if (van - vbn > 0) {
-              // Fórmula de colisão elástica com massa
-              // Coeficiente de restituição 0.95 (quase perfeito = bilhar)
               const e = 0.95;
               const vanNew = (van * (a.m - b.m) + 2 * b.m * vbn) / totalMass;
               const vbnNew = (vbn * (b.m - a.m) + 2 * a.m * van) / totalMass;
-              
-              // Aplicar só a componente normal (tangencial é preservada)
               a.vx += (vanNew - van) * nx * e;
               a.vy += (vanNew - van) * ny * e;
               b.vx += (vbnNew - vbn) * nx * e;
@@ -532,25 +1746,25 @@ function KanbanField({ kanbans, onSelectKanban }) {
           }
         }
       }
-      
       setTick(t => t + 1);
       requestAnimationFrame(tickFn);
     };
-    
     const raf = requestAnimationFrame(tickFn);
-    return () => { running = false; cancelAnimationFrame(raf); };
+    return () => {
+      running = false;
+      cancelAnimationFrame(raf);
+    };
   }, [kanbans, dimensions]);
-  
   const onMouseDown = (e, id) => {
     const rect = containerRef.current.getBoundingClientRect();
     const p = particlesRef.current[id];
     if (!p) return;
-    draggingRef.current = { 
-      id, 
-      offsetX: e.clientX - rect.left - p.x, 
-      offsetY: e.clientY - rect.top - p.y, 
-      moved: false, 
-      startX: e.clientX, 
+    draggingRef.current = {
+      id,
+      offsetX: e.clientX - rect.left - p.x,
+      offsetY: e.clientY - rect.top - p.y,
+      moved: false,
+      startX: e.clientX,
       startY: e.clientY,
       lastX: p.x,
       lastY: p.y,
@@ -558,7 +1772,7 @@ function KanbanField({ kanbans, onSelectKanban }) {
       velY: 0
     };
   };
-  const onMouseMove = (e) => {
+  const onMouseMove = e => {
     const d = draggingRef.current;
     if (!d) return;
     const rect = containerRef.current.getBoundingClientRect();
@@ -566,22 +1780,21 @@ function KanbanField({ kanbans, onSelectKanban }) {
     if (!p) return;
     const newX = e.clientX - rect.left - d.offsetX;
     const newY = e.clientY - rect.top - d.offsetY;
-    // Calcular velocidade do movimento pra usar quando soltar
     d.velX = newX - d.lastX;
     d.velY = newY - d.lastY;
     d.lastX = newX;
     d.lastY = newY;
     p.x = newX;
     p.y = newY;
-    p.vx = 0; p.vy = 0;
+    p.vx = 0;
+    p.vy = 0;
     if (Math.abs(e.clientX - d.startX) + Math.abs(e.clientY - d.startY) > 5) d.moved = true;
   };
-  const onMouseUp = (id) => {
+  const onMouseUp = id => {
     const d = draggingRef.current;
     if (d && !d.moved && d.id === id) {
       onSelectKanban(id);
     } else if (d && d.moved && d.id === id) {
-      // TACADA: aplicar velocidade do movimento ao soltar
       const p = particlesRef.current[id];
       if (p) {
         p.vx = d.velX * 1.2;
@@ -595,12 +1808,12 @@ function KanbanField({ kanbans, onSelectKanban }) {
     const rect = containerRef.current.getBoundingClientRect();
     const p = particlesRef.current[id];
     if (!p) return;
-    draggingRef.current = { 
-      id, 
-      offsetX: t.clientX - rect.left - p.x, 
-      offsetY: t.clientY - rect.top - p.y, 
-      moved: false, 
-      startX: t.clientX, 
+    draggingRef.current = {
+      id,
+      offsetX: t.clientX - rect.left - p.x,
+      offsetY: t.clientY - rect.top - p.y,
+      moved: false,
+      startX: t.clientX,
       startY: t.clientY,
       lastX: p.x,
       lastY: p.y,
@@ -608,7 +1821,7 @@ function KanbanField({ kanbans, onSelectKanban }) {
       velY: 0
     };
   };
-  const onTouchMove = (e) => {
+  const onTouchMove = e => {
     const d = draggingRef.current;
     if (!d) return;
     e.preventDefault();
@@ -624,10 +1837,11 @@ function KanbanField({ kanbans, onSelectKanban }) {
     d.lastY = newY;
     p.x = newX;
     p.y = newY;
-    p.vx = 0; p.vy = 0;
+    p.vx = 0;
+    p.vy = 0;
     if (Math.abs(t.clientX - d.startX) + Math.abs(t.clientY - d.startY) > 8) d.moved = true;
   };
-  const onTouchEnd = (id) => {
+  const onTouchEnd = id => {
     const d = draggingRef.current;
     if (d && !d.moved && d.id === id) {
       onSelectKanban(id);
@@ -640,176 +1854,485 @@ function KanbanField({ kanbans, onSelectKanban }) {
     }
     draggingRef.current = null;
   };
-  
-  return (
-    <div ref={containerRef} style={{flex:1,position:'relative',overflow:'hidden',minHeight:'calc(100vh - 150px)',cursor:'default'}}
-      onMouseMove={onMouseMove}
-      onMouseUp={() => draggingRef.current = null}
-      onMouseLeave={() => draggingRef.current = null}
-      onTouchMove={onTouchMove}
-    >
-      <div style={{position:'absolute',left:0,right:0,top:'70%',height:1,background:'linear-gradient(90deg, transparent, rgba(107,114,128,0.2), transparent)',pointerEvents:'none'}}></div>
-      <div style={{position:'absolute',left:14,top:'calc(70% + 8px)',fontSize:9,color:'rgba(107,114,128,0.5)',letterSpacing:2,textTransform:'uppercase',fontWeight:600,pointerEvents:'none'}}>⚫ Perdidos</div>
-      
-      {kanbans.map(k => {
-        const p = particlesRef.current[k.id];
-        if (!p) return null;
-        const s = STATUS[k.status] || STATUS.aberto;
-        const size = p.r * 2;
-        const fontSize = Math.max(9, Math.min(14, size * 0.14));
-        const shortName = k.cliente_nome.length > 20 && size < 80 ? k.cliente_nome.slice(0, 18) + '…' : k.cliente_nome;
-        return (
-          <div
-            key={k.id}
-            className="bubble"
-            onMouseDown={e => onMouseDown(e, k.id)}
-            onMouseUp={() => onMouseUp(k.id)}
-            onTouchStart={e => onTouchStart(e, k.id)}
-            onTouchEnd={() => onTouchEnd(k.id)}
-            style={{
-              left: p.x - p.r, top: p.y - p.r, width: size, height: size,
-              background: `radial-gradient(circle at 35% 30%, ${s.cor}ee, ${s.corEscura}dd)`,
-              border: `1.5px solid ${s.cor}`,
-              boxShadow: `0 4px 20px ${s.cor}55, inset 0 2px 8px rgba(255,255,255,0.2), inset 0 -4px 10px rgba(0,0,0,0.15)`,
-              color:'#fff', fontSize: fontSize,
-              opacity: k.status === 'perdido' ? 0.7 : 1
-            }}
-            title={k.cliente_nome}
-          >
-            <span className="bubble-label" style={{fontSize:fontSize,fontWeight:700}}>{shortName}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
+  return React.createElement("div", {
+    ref: containerRef,
+    style: {
+      flex: 1,
+      position: 'relative',
+      overflow: 'hidden',
+      minHeight: 'calc(100vh - 150px)',
+      cursor: 'default'
+    },
+    onMouseMove: onMouseMove,
+    onMouseUp: () => draggingRef.current = null,
+    onMouseLeave: () => draggingRef.current = null,
+    onTouchMove: onTouchMove
+  }, React.createElement("div", {
+    style: {
+      position: 'absolute',
+      left: 0,
+      right: 0,
+      top: '70%',
+      height: 1,
+      background: 'linear-gradient(90deg, transparent, rgba(107,114,128,0.2), transparent)',
+      pointerEvents: 'none'
+    }
+  }), React.createElement("div", {
+    style: {
+      position: 'absolute',
+      left: 14,
+      top: 'calc(70% + 8px)',
+      fontSize: 9,
+      color: 'rgba(107,114,128,0.5)',
+      letterSpacing: 2,
+      textTransform: 'uppercase',
+      fontWeight: 600,
+      pointerEvents: 'none'
+    }
+  }, "\u26AB Perdidos"), kanbans.map(k => {
+    const p = particlesRef.current[k.id];
+    if (!p) return null;
+    const s = STATUS[k.status] || STATUS.aberto;
+    const size = p.r * 2;
+    const fontSize = Math.max(9, Math.min(14, size * 0.14));
+    const shortName = k.cliente_nome.length > 20 && size < 80 ? k.cliente_nome.slice(0, 18) + '…' : k.cliente_nome;
+    return React.createElement("div", {
+      key: k.id,
+      className: "bubble",
+      onMouseDown: e => onMouseDown(e, k.id),
+      onMouseUp: () => onMouseUp(k.id),
+      onTouchStart: e => onTouchStart(e, k.id),
+      onTouchEnd: () => onTouchEnd(k.id),
+      style: {
+        left: p.x - p.r,
+        top: p.y - p.r,
+        width: size,
+        height: size,
+        background: `radial-gradient(circle at 35% 30%, ${s.cor}ee, ${s.corEscura}dd)`,
+        border: `1.5px solid ${s.cor}`,
+        boxShadow: `0 4px 20px ${s.cor}55, inset 0 2px 8px rgba(255,255,255,0.2), inset 0 -4px 10px rgba(0,0,0,0.15)`,
+        color: '#fff',
+        fontSize: fontSize,
+        opacity: k.status === 'perdido' ? 0.7 : 1
+      },
+      title: k.cliente_nome
+    }, React.createElement("span", {
+      className: "bubble-label",
+      style: {
+        fontSize: fontSize,
+        fontWeight: 700
+      }
+    }, shortName));
+  }));
 }
-
-function KanbanModal({ kanban, onClose, onUpdateStatus, onUpdateTags, onAddComment, tags, user }) {
+function KanbanModal({
+  kanban,
+  onClose,
+  onUpdateStatus,
+  onUpdateTags,
+  onAddComment,
+  tags,
+  user
+}) {
   const [commentText, setCommentText] = useState('');
   const [historico, setHistorico] = useState([]);
   const [loadingHist, setLoadingHist] = useState(false);
-  
   const tagsAtuais = useMemo(() => (kanban.tags || '').split(';').filter(Boolean), [kanban.tags]);
-  
   const loadHistorico = useCallback(async () => {
     setLoadingHist(true);
-    const res = await callAPI('getHistory', { kanban_id: kanban.id });
+    const res = await callAPI('getHistory', {
+      kanban_id: kanban.id
+    });
     if (res.ok) setHistorico(res.historico);
     setLoadingHist(false);
   }, [kanban.id]);
-  
-  useEffect(() => { loadHistorico(); }, [loadHistorico]);
-  
-  const toggleTag = (tagNome) => {
+  useEffect(() => {
+    loadHistorico();
+  }, [loadHistorico]);
+  const toggleTag = tagNome => {
     const novas = tagsAtuais.includes(tagNome) ? tagsAtuais.filter(t => t !== tagNome) : [...tagsAtuais, tagNome];
     onUpdateTags(kanban.id, novas);
   };
-  
   const handleAddComment = async () => {
     if (!commentText.trim()) return;
     const ok = await onAddComment(kanban.id, commentText.trim());
-    if (ok) { setCommentText(''); loadHistorico(); }
+    if (ok) {
+      setCommentText('');
+      loadHistorico();
+    }
   };
-  
   const s = STATUS[kanban.status] || STATUS.aberto;
-  const fmt = (n) => 'R$ ' + Number(n||0).toLocaleString('pt-BR', {minimumFractionDigits: 2});
-  const fmtData = (d) => {
+  const fmt = n => 'R$ ' + Number(n || 0).toLocaleString('pt-BR', {
+    minimumFractionDigits: 2
+  });
+  const fmtData = d => {
     if (!d) return '—';
-    try { const dt = new Date(d); return dt.toLocaleDateString('pt-BR') + ' ' + dt.toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'}); } catch(e) { return String(d); }
+    try {
+      const dt = new Date(d);
+      return dt.toLocaleDateString('pt-BR') + ' ' + dt.toLocaleTimeString('pt-BR', {
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch (e) {
+      return String(d);
+    }
   };
-  
-  return (
-    <div onClick={onClose} style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',backdropFilter:'blur(6px)',WebkitBackdropFilter:'blur(6px)',zIndex:1000,display:'flex',alignItems:'center',justifyContent:'center',padding:20,animation:'fadeIn .2s'}}>
-      <div onClick={e => e.stopPropagation()} style={{width:'100%',maxWidth:640,maxHeight:'90vh',overflowY:'auto',background:'rgba(13,21,38,0.95)',backdropFilter:'blur(20px) saturate(180%)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:20,boxShadow:'0 20px 60px rgba(0,0,0,0.5)',animation:'scaleIn .25s cubic-bezier(.4,0,.2,1)'}}>
-        <div style={{background:`linear-gradient(135deg, ${s.cor}33, ${s.corEscura}22)`,borderBottom:`1px solid ${s.cor}44`,padding:'20px 24px',position:'relative'}}>
-          <button onClick={onClose} style={{position:'absolute',top:14,right:14,width:32,height:32,borderRadius:8,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',color:'#94a3b8',fontSize:16,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center'}}>✕</button>
-          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
-            <span style={{fontSize:10,fontWeight:700,letterSpacing:1,textTransform:'uppercase',padding:'3px 8px',borderRadius:20,background:`${s.cor}33`,color:s.cor,border:`1px solid ${s.cor}66`}}>{s.emoji} {s.label}</span>
-          </div>
-          <div style={{fontSize:20,fontWeight:800,letterSpacing:-0.5,marginBottom:4}}>{kanban.cliente_nome}</div>
-          <div style={{fontSize:11,color:'#94a3b8',letterSpacing:0.5}}>📍 {kanban.cliente_cidade || '—'} • ID {kanban.cliente_id}</div>
-        </div>
-        
-        <div style={{padding:'18px 24px',display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,borderBottom:'1px solid rgba(255,255,255,0.05)'}}>
-          <div style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.05)',borderRadius:10,padding:'10px 14px'}}>
-            <div style={{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,marginBottom:4}}>Faturamento histórico</div>
-            <div style={{fontSize:15,fontWeight:700,color:'#4ade80'}}>{fmt(kanban.faturamento_hist)}</div>
-          </div>
-          <div style={{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.05)',borderRadius:10,padding:'10px 14px'}}>
-            <div style={{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,marginBottom:4}}>Potencial perdido</div>
-            <div style={{fontSize:15,fontWeight:700,color:'#fca5a5'}}>{fmt(kanban.potencial_perdido)}</div>
-          </div>
-        </div>
-        
-        <div style={{padding:'18px 24px',borderBottom:'1px solid rgba(255,255,255,0.05)'}}>
-          <div style={{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,marginBottom:10}}>Mudar situação</div>
-          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-            {Object.entries(STATUS).map(([key, st]) => {
-              const isActive = kanban.status === key;
-              return (
-                <button key={key} onClick={() => onUpdateStatus(kanban.id, key)} disabled={isActive} style={{padding:'8px 14px',borderRadius:20,background: isActive ? `${st.cor}30` : 'rgba(255,255,255,0.04)',border:`1px solid ${isActive ? st.cor+'80' : 'rgba(255,255,255,0.08)'}`,color: isActive ? st.cor : '#94a3b8',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:6}}>
-                  <span>{st.emoji}</span><span>{st.label}</span>
-                  {isActive && <span style={{fontSize:10,opacity:0.8}}>✓ atual</span>}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        
-        <div style={{padding:'18px 24px',borderBottom:'1px solid rgba(255,255,255,0.05)'}}>
-          <div style={{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,marginBottom:10}}>
-            Tags {tagsAtuais.length > 0 && <span style={{color:'#a78bfa'}}>({tagsAtuais.length} selecionadas)</span>}
-          </div>
-          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-            {tags.map(t => {
-              const selected = tagsAtuais.includes(t.nome);
-              return (
-                <button key={t.id} onClick={() => toggleTag(t.nome)} style={{padding:'5px 11px',borderRadius:16,fontSize:11,fontWeight:600,background: selected ? t.cor : 'rgba(255,255,255,0.03)',color: selected ? '#fff' : '#94a3b8',border:`1px solid ${selected ? t.cor : 'rgba(255,255,255,0.08)'}`,boxShadow: selected ? `0 2px 8px ${t.cor}50` : 'none'}}>
-                  {selected ? '✓ ' : ''}{t.nome}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        
-        <div style={{padding:'18px 24px',borderBottom:'1px solid rgba(255,255,255,0.05)'}}>
-          <div style={{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,marginBottom:10}}>Adicionar comentário</div>
-          <textarea value={commentText} onChange={e => setCommentText(e.target.value)} placeholder="Ex: Liguei, cliente pediu pra retornar semana que vem..." rows={3} style={{width:'100%',padding:'11px 14px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:10,color:'#e2e8f0',fontSize:13,resize:'vertical',fontFamily:'inherit'}} />
-          <button onClick={handleAddComment} disabled={!commentText.trim()} style={{marginTop:8,padding:'9px 18px',background: commentText.trim() ? 'linear-gradient(135deg,#6366f1,#a855f7)' : 'rgba(255,255,255,0.05)',border:'none',borderRadius:8,color:'#fff',fontSize:12,fontWeight:600,display:'inline-flex',alignItems:'center',gap:8}}>💾 Salvar comentário</button>
-        </div>
-        
-        <div style={{padding:'18px 24px'}}>
-          <div style={{fontSize:10,color:'#64748b',textTransform:'uppercase',letterSpacing:1,fontWeight:600,marginBottom:10}}>Histórico de ações ({historico.length})</div>
-          {loadingHist ? (
-            <div style={{padding:14,textAlign:'center',color:'#64748b',fontSize:12}}>Carregando...</div>
-          ) : historico.length === 0 ? (
-            <div style={{padding:14,textAlign:'center',color:'#64748b',fontSize:12}}>Sem histórico ainda.</div>
-          ) : (
-            <div style={{display:'flex',flexDirection:'column',gap:6,maxHeight:260,overflowY:'auto'}}>
-              {historico.map(h => {
-                const icones = {criou:'➕',mudou_status:'🔄',mudou_tags:'🏷',comentou:'💬',finalizou:'✅',auto_finalizou:'✨'};
-                return (
-                  <div key={h.id} style={{padding:'10px 12px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.05)',borderRadius:8,fontSize:12}}>
-                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4,gap:8}}>
-                      <div style={{display:'flex',alignItems:'center',gap:8,color:'#c4b5fd',fontWeight:600}}>
-                        <span>{icones[h.acao] || '•'}</span>
-                        <span>{h.por}</span>
-                        {h.de && h.para && <span style={{color:'#64748b',fontWeight:400}}>{h.de} → {h.para}</span>}
-                      </div>
-                      <div style={{fontSize:10,color:'#64748b'}}>{fmtData(h.quando)}</div>
-                    </div>
-                    {h.detalhes && <div style={{color:'#c8d6e5',lineHeight:1.5,whiteSpace:'pre-wrap'}}>{h.detalhes}</div>}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
+  return React.createElement("div", {
+    onClick: onClose,
+    style: {
+      position: 'fixed',
+      inset: 0,
+      background: 'rgba(0,0,0,0.7)',
+      backdropFilter: 'blur(6px)',
+      WebkitBackdropFilter: 'blur(6px)',
+      zIndex: 1000,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 20,
+      animation: 'fadeIn .2s'
+    }
+  }, React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    style: {
+      width: '100%',
+      maxWidth: 640,
+      maxHeight: '90vh',
+      overflowY: 'auto',
+      background: 'color-mix(in srgb,var(--md-s2) 95%,transparent)',
+      backdropFilter: 'blur(20px) saturate(180%)',
+      border: '1px solid rgba(255,255,255,0.1)',
+      borderRadius: 28,
+      boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
+      animation: 'scaleIn .25s cubic-bezier(.4,0,.2,1)'
+    }
+  }, React.createElement("div", {
+    style: {
+      background: `linear-gradient(135deg, ${s.cor}33, ${s.corEscura}22)`,
+      borderBottom: `1px solid ${s.cor}44`,
+      padding: '20px 24px',
+      position: 'relative'
+    }
+  }, React.createElement("button", {
+    onClick: onClose,
+    style: {
+      position: 'absolute',
+      top: 14,
+      right: 14,
+      width: 32,
+      height: 32,
+      borderRadius: 12,
+      background: 'rgba(255,255,255,0.05)',
+      border: '1px solid rgba(255,255,255,0.1)',
+      color: 'var(--md-onv)',
+      fontSize: 16,
+      fontWeight: 700,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center'
+    }
+  }, "\u2715"), React.createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8,
+      marginBottom: 6
+    }
+  }, React.createElement("span", {
+    style: {
+      fontSize: 10,
+      fontWeight: 700,
+      letterSpacing: 1,
+      textTransform: 'uppercase',
+      padding: '3px 8px',
+      borderRadius: 28,
+      background: `${s.cor}33`,
+      color: s.cor,
+      border: `1px solid ${s.cor}66`
+    }
+  }, s.emoji, " ", s.label)), React.createElement("div", {
+    style: {
+      fontSize: 20,
+      fontWeight: 800,
+      letterSpacing: -0.5,
+      marginBottom: 4
+    }
+  }, kanban.cliente_nome), React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--md-onv)',
+      letterSpacing: 0.5
+    }
+  }, "\uD83D\uDCCD ", kanban.cliente_cidade || '—', " \u2022 ID ", kanban.cliente_id)), React.createElement("div", {
+    style: {
+      padding: '18px 24px',
+      display: 'grid',
+      gridTemplateColumns: '1fr 1fr',
+      gap: 10,
+      borderBottom: '1px solid rgba(255,255,255,0.05)'
+    }
+  }, React.createElement("div", {
+    style: {
+      background: 'rgba(255,255,255,0.03)',
+      border: '1px solid rgba(255,255,255,0.05)',
+      borderRadius: 14,
+      padding: '10px 14px'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--md-mut)',
+      textTransform: 'uppercase',
+      letterSpacing: 1,
+      fontWeight: 600,
+      marginBottom: 4
+    }
+  }, "Faturamento hist\xF3rico"), React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      color: '#4ade80'
+    }
+  }, fmt(kanban.faturamento_hist))), React.createElement("div", {
+    style: {
+      background: 'rgba(255,255,255,0.03)',
+      border: '1px solid rgba(255,255,255,0.05)',
+      borderRadius: 14,
+      padding: '10px 14px'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--md-mut)',
+      textTransform: 'uppercase',
+      letterSpacing: 1,
+      fontWeight: 600,
+      marginBottom: 4
+    }
+  }, "Potencial perdido"), React.createElement("div", {
+    style: {
+      fontSize: 15,
+      fontWeight: 700,
+      color: '#fca5a5'
+    }
+  }, fmt(kanban.potencial_perdido)))), React.createElement("div", {
+    style: {
+      padding: '18px 24px',
+      borderBottom: '1px solid rgba(255,255,255,0.05)'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--md-mut)',
+      textTransform: 'uppercase',
+      letterSpacing: 1,
+      fontWeight: 600,
+      marginBottom: 10
+    }
+  }, "Mudar situa\xE7\xE3o"), React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 6,
+      flexWrap: 'wrap'
+    }
+  }, Object.entries(STATUS).map(([key, st]) => {
+    const isActive = kanban.status === key;
+    return React.createElement("button", {
+      key: key,
+      onClick: () => onUpdateStatus(kanban.id, key),
+      disabled: isActive,
+      style: {
+        padding: '8px 14px',
+        borderRadius: 28,
+        background: isActive ? `${st.cor}30` : 'rgba(255,255,255,0.04)',
+        border: `1px solid ${isActive ? st.cor + '80' : 'rgba(255,255,255,0.08)'}`,
+        color: isActive ? st.cor : 'var(--md-onv)',
+        fontSize: 12,
+        fontWeight: 600,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6
+      }
+    }, React.createElement("span", null, st.emoji), React.createElement("span", null, st.label), isActive && React.createElement("span", {
+      style: {
+        fontSize: 10,
+        opacity: 0.8
+      }
+    }, "\u2713 atual"));
+  }))), React.createElement("div", {
+    style: {
+      padding: '18px 24px',
+      borderBottom: '1px solid rgba(255,255,255,0.05)'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--md-mut)',
+      textTransform: 'uppercase',
+      letterSpacing: 1,
+      fontWeight: 600,
+      marginBottom: 10
+    }
+  }, "Tags ", tagsAtuais.length > 0 && React.createElement("span", {
+    style: {
+      color: 'var(--md-t75)'
+    }
+  }, "(", tagsAtuais.length, " selecionadas)")), React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 6,
+      flexWrap: 'wrap'
+    }
+  }, tags.map(t => {
+    const selected = tagsAtuais.includes(t.nome);
+    return React.createElement("button", {
+      key: t.id,
+      onClick: () => toggleTag(t.nome),
+      style: {
+        padding: '5px 11px',
+        borderRadius: 24,
+        fontSize: 11,
+        fontWeight: 600,
+        background: selected ? t.cor : 'rgba(255,255,255,0.03)',
+        color: selected ? '#fff' : 'var(--md-onv)',
+        border: `1px solid ${selected ? t.cor : 'rgba(255,255,255,0.08)'}`,
+        boxShadow: selected ? `0 2px 8px ${t.cor}50` : 'none'
+      }
+    }, selected ? '✓ ' : '', t.nome);
+  }))), React.createElement("div", {
+    style: {
+      padding: '18px 24px',
+      borderBottom: '1px solid rgba(255,255,255,0.05)'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--md-mut)',
+      textTransform: 'uppercase',
+      letterSpacing: 1,
+      fontWeight: 600,
+      marginBottom: 10
+    }
+  }, "Adicionar coment\xE1rio"), React.createElement("textarea", {
+    value: commentText,
+    onChange: e => setCommentText(e.target.value),
+    placeholder: "Ex: Liguei, cliente pediu pra retornar semana que vem...",
+    rows: 3,
+    style: {
+      width: '100%',
+      padding: '11px 14px',
+      background: 'rgba(255,255,255,0.02)',
+      border: '1px solid rgba(255,255,255,0.1)',
+      borderRadius: 14,
+      color: 'var(--md-on)',
+      fontSize: 13,
+      resize: 'vertical',
+      fontFamily: 'inherit'
+    }
+  }), React.createElement("button", {
+    onClick: handleAddComment,
+    disabled: !commentText.trim(),
+    style: {
+      marginTop: 8,
+      padding: '9px 18px',
+      background: commentText.trim() ? 'var(--md-p55)' : 'rgba(255,255,255,0.05)',
+      border: 'none',
+      borderRadius: 12,
+      color: '#fff',
+      fontSize: 12,
+      fontWeight: 600,
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 8
+    }
+  }, "\uD83D\uDCBE Salvar coment\xE1rio")), React.createElement("div", {
+    style: {
+      padding: '18px 24px'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--md-mut)',
+      textTransform: 'uppercase',
+      letterSpacing: 1,
+      fontWeight: 600,
+      marginBottom: 10
+    }
+  }, "Hist\xF3rico de a\xE7\xF5es (", historico.length, ")"), loadingHist ? React.createElement("div", {
+    style: {
+      padding: 14,
+      textAlign: 'center',
+      color: 'var(--md-mut)',
+      fontSize: 12
+    }
+  }, "Carregando...") : historico.length === 0 ? React.createElement("div", {
+    style: {
+      padding: 14,
+      textAlign: 'center',
+      color: 'var(--md-mut)',
+      fontSize: 12
+    }
+  }, "Sem hist\xF3rico ainda.") : React.createElement("div", {
+    style: {
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 6,
+      maxHeight: 260,
+      overflowY: 'auto'
+    }
+  }, historico.map(h => {
+    const icones = {
+      criou: '➕',
+      mudou_status: '🔄',
+      mudou_tags: '🏷',
+      comentou: '💬',
+      finalizou: '✅',
+      auto_finalizou: '✨'
+    };
+    return React.createElement("div", {
+      key: h.id,
+      style: {
+        padding: '10px 12px',
+        background: 'rgba(255,255,255,0.02)',
+        border: '1px solid rgba(255,255,255,0.05)',
+        borderRadius: 12,
+        fontSize: 12
+      }
+    }, React.createElement("div", {
+      style: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 4,
+        gap: 8
+      }
+    }, React.createElement("div", {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        color: 'var(--md-t85)',
+        fontWeight: 600
+      }
+    }, React.createElement("span", null, icones[h.acao] || '•'), React.createElement("span", null, h.por), h.de && h.para && React.createElement("span", {
+      style: {
+        color: 'var(--md-mut)',
+        fontWeight: 400
+      }
+    }, h.de, " \u2192 ", h.para)), React.createElement("div", {
+      style: {
+        fontSize: 10,
+        color: 'var(--md-mut)'
+      }
+    }, fmtData(h.quando))), h.detalhes && React.createElement("div", {
+      style: {
+        color: 'var(--md-on2)',
+        lineHeight: 1.5,
+        whiteSpace: 'pre-wrap'
+      }
+    }, h.detalhes));
+  })))));
 }
-
 const container = document.getElementById('root');
 const root = ReactDOM.createRoot(container);
 root.render(React.createElement(App));
