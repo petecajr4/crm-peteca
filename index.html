@@ -18736,7 +18736,65 @@ function AnalisarNovosClientesModal({
       color: todosDecididos ? '#86efac' : '#fdba74',
       fontWeight: 700
     }
-  }, totalDecidido, " / ", novos.length, " resolvidos")))), React.createElement("div", {
+  }, totalDecidido, " / ", novos.length, " resolvidos"), !todosDecididos && React.createElement(React.Fragment, null, React.createElement("button", {
+    title: "Vincula quem tem nome praticamente igual (95%+) a um cliente existente e cria o resto",
+    onClick: () => setDecisoes(prev => {
+      const n2 = {
+        ...prev
+      };
+      novos.forEach(n => {
+        if (n2[n.id]) return;
+        const top = (sugestoes[n.id] || [])[0];
+        n2[n.id] = top && top.score >= 95 ? {
+          type: 'vincular',
+          alvoId: top.real.i,
+          alvoNome: top.real.n
+        } : {
+          type: 'criar',
+          nome: n.nome || `CLIENTE ${n.id}`,
+          cidade: '',
+          bairro: '',
+          rua: '',
+          numero: ''
+        };
+      });
+      return n2;
+    }),
+    style: {
+      padding: '0 16px',
+      background: 'var(--md-pc)',
+      border: 'none',
+      color: 'var(--md-onpc)',
+      fontSize: 12,
+      fontWeight: 700
+    }
+  }, "\u26A1 Resolver autom\xE1tico"), React.createElement("button", {
+    title: "Cria como novo todos que ainda n\xE3o foram decididos",
+    onClick: () => setDecisoes(prev => {
+      const n2 = {
+        ...prev
+      };
+      novos.forEach(n => {
+        if (!n2[n.id]) n2[n.id] = {
+          type: 'criar',
+          nome: n.nome || `CLIENTE ${n.id}`,
+          cidade: '',
+          bairro: '',
+          rua: '',
+          numero: ''
+        };
+      });
+      return n2;
+    }),
+    style: {
+      padding: '0 16px',
+      background: 'transparent',
+      border: '1px solid var(--md-ol)',
+      color: 'var(--md-onv)',
+      fontSize: 12,
+      fontWeight: 600
+    }
+  }, "\u2795 Criar todos"))))), React.createElement("div", {
     style: {
       padding: '14px 22px'
     }

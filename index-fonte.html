@@ -9970,6 +9970,31 @@ function AnalisarNovosClientesModal({ dados, clientes, getClientData, onCancelar
               <div style={{padding:'6px 12px',background:todosDecididos?'rgba(34,197,94,0.15)':'rgba(245,158,11,0.15)',border:`1px solid ${todosDecididos?'rgba(34,197,94,0.4)':'rgba(245,158,11,0.4)'}`,borderRadius:12,fontSize:12,color:todosDecididos?'#86efac':'#fdba74',fontWeight:700}}>
                 {totalDecidido} / {novos.length} resolvidos
               </div>
+              {/* v10: atalhos para resolver tudo de uma vez */}
+              {!todosDecididos && (
+                <>
+                  <button title="Vincula quem tem nome praticamente igual (95%+) a um cliente existente e cria o resto"
+                    onClick={() => setDecisoes(prev => {
+                      const n2 = {...prev};
+                      novos.forEach(n => {
+                        if (n2[n.id]) return;
+                        const top = (sugestoes[n.id] || [])[0];
+                        n2[n.id] = (top && top.score >= 95)
+                          ? { type:'vincular', alvoId: top.real.i, alvoNome: top.real.n }
+                          : { type:'criar', nome: n.nome || `CLIENTE ${n.id}`, cidade:'', bairro:'', rua:'', numero:'' };
+                      });
+                      return n2;
+                    })}
+                    style={{padding:'0 16px',background:'var(--md-pc)',border:'none',color:'var(--md-onpc)',fontSize:12,fontWeight:700}}>⚡ Resolver automático</button>
+                  <button title="Cria como novo todos que ainda não foram decididos"
+                    onClick={() => setDecisoes(prev => {
+                      const n2 = {...prev};
+                      novos.forEach(n => { if (!n2[n.id]) n2[n.id] = { type:'criar', nome: n.nome || `CLIENTE ${n.id}`, cidade:'', bairro:'', rua:'', numero:'' }; });
+                      return n2;
+                    })}
+                    style={{padding:'0 16px',background:'transparent',border:'1px solid var(--md-ol)',color:'var(--md-onv)',fontSize:12,fontWeight:600}}>➕ Criar todos</button>
+                </>
+              )}
             </div>
           </div>
         </div>
