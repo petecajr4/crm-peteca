@@ -21243,6 +21243,55 @@ function GerenciarVendedoresModal({
     }
   }, "Senha m\xEDnima 6 caracteres. O usu\xE1rio pode trocar depois pelo \uD83D\uDD11. Novo vendedor aparece na carteira e nos Kanbans."))))), document.body);
 }
+const cadNorm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+const CAD_SOCIETARIO = /\b(LTDA|ME|EPP|EIRELI|MEI|S A|SA|CIA|E|DE|DA|DO|DAS|DOS|EM|COM|COMERCIO|COMERCIAL|IND|INDUSTRIA|SERV|SERVICOS|EMPREENDIMENTOS?)\b/g;
+const CAD_GENERICOS = /\b(COMUNICACAO|COMUNICACA|COMUNICACOES|VISUAL|VISUAIS|GRAFICA|GRAF|BRINDES|ADESIVOS?|PUBLICIDADE|PROPAGANDA|TOLDOS?|IMPRESSAO|IMPRESSOES|DIGITAL|DESIGN|DESIGNER|ARTES?|ARTS|PAINEIS|LETREIROS?|SINALIZACAO|PLACAS|LUMINOSOS|ENVELOPAMENTO|SOLUCOES|STUDIO|PRINT|MARKETING|EDITORA|COPIADORA|FOTO|LETRAS)\b/g;
+const cadNomeBase = (s, cidade) => {
+  let t = ' ' + cadNorm(s).replace(/\d+/g, ' ') + ' ';
+  t = t.replace(CAD_SOCIETARIO, ' ');
+  cadNorm(cidade).split(' ').filter(w => w.length >= 4).forEach(w => {
+    t = t.replace(new RegExp('\\b' + w + '\\b', 'g'), ' ');
+  });
+  return t.replace(/\s+/g, ' ').trim();
+};
+const cadNucleo = (s, cidade) => cadNomeBase(s, cidade).replace(CAD_GENERICOS, ' ').replace(/\s+/g, ' ').trim();
+const cadDoc = s => {
+  const m = String(s || '').match(/\d[\d.\-\/]{6,}\d/g) || [];
+  for (const x of m) {
+    const d = x.replace(/\D/g, '');
+    if (d.length >= 8) return d;
+  }
+  return '';
+};
+const cadTel = t => {
+  const d = String(t || '').replace(/\D/g, '');
+  return d.length >= 8 ? d.slice(-8) : '';
+};
+const cadSim = (a, b) => {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  const m = a.length,
+    n = b.length;
+  let p = Array.from({
+    length: n + 1
+  }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const q = [i];
+    for (let j = 1; j <= n; j++) q[j] = Math.min(p[j] + 1, q[j - 1] + 1, p[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    p = q;
+  }
+  return 1 - p[n] / Math.max(m, n);
+};
+const cadNomeLimpo = nc => {
+  const s = String(nc || '').split(/\s{2,}/)[0].trim();
+  return /EMISS[AÃ]O|P[AÁ]GINA/i.test(s) || s.length < 2 ? '' : s;
+};
+const cadParKey = (a, b) => {
+  const x = String(a),
+    y = String(b);
+  return x < y ? x + '|' + y : y + '|' + x;
+};
+const fmtD = d => d ? d.slice(8, 10) + '/' + d.slice(5, 7) + '/' + d.slice(0, 4) : '—';
 function cadStatsVendas(vendas, resolveAlias) {
   const st = {};
   Object.values(vendas).forEach(arr => (arr || []).forEach(v => {
