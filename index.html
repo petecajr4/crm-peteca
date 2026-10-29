@@ -22072,6 +22072,18 @@ function CarteiraTab({
     }));
     return m;
   }, [vendas, resolveAlias]);
+  const vendTodos = useMemo(() => {
+    const m = {};
+    Object.values(vendas).forEach(arr => (arr || []).forEach(v => {
+      if (!v.clienteId || !v.data) return;
+      const vend = String(v.vendedor || '').toUpperCase().trim();
+      if (!vend) return;
+      const id = String(resolveAlias(v.clienteId));
+      const c = m[id] = m[id] || {};
+      (c[vend] = c[vend] || []).push(v.data);
+    }));
+    return m;
+  }, [vendas, resolveAlias]);
   const diasAtendidos = datas => {
     const d = [...new Set(datas)].sort();
     const gap = (a, b) => (new Date(b) - new Date(a)) / 864e5;
@@ -22094,19 +22106,29 @@ function CarteiraTab({
     };
   };
   const regraInicial = id => {
-    const m = vend12[String(id)];
+    const m = vendTodos[String(id)];
     if (!m) return 'EMPRESA';
-    let best = null;
-    Object.entries(m).forEach(([v, ds]) => {
-      if (!vendedoresAtivos.includes(v)) return;
-      const ult = ds.reduce((a, b) => a > b ? a : b, '');
-      if (!best || ds.length > best.n || ds.length === best.n && ult > best.ult) best = {
-        v,
-        n: ds.length,
-        ult
-      };
-    });
-    return best ? best.v : 'EMPRESA';
+    const todas = Object.values(m).flat();
+    let fim = todas.reduce((a, b) => a > b ? a : b, '');
+    const ini0 = todas.reduce((a, b) => a < b ? a : b, fim);
+    while (fim >= ini0) {
+      const ini = new Date(new Date(fim) - 365 * 864e5).toISOString().slice(0, 10);
+      let best = null;
+      Object.entries(m).forEach(([v, ds]) => {
+        if (!vendedoresAtivos.includes(v)) return;
+        const d = ds.filter(x => x > ini && x <= fim);
+        if (!d.length) return;
+        const ult = d.reduce((a, b) => a > b ? a : b, '');
+        if (!best || d.length > best.n || d.length === best.n && ult > best.ult) best = {
+          v,
+          n: d.length,
+          ult
+        };
+      });
+      if (best) return best.v;
+      fim = ini;
+    }
+    return 'EMPRESA';
   };
   const [recalc, setRecalc] = useState(null);
   const MOTIVOS_AUTO = /^(Carga inicial|Cliente novo|Recálculo|Herdado na mesclagem)/;
@@ -22138,12 +22160,12 @@ function CarteiraTab({
       setRodando(null);
     }
   };
-  const aplicarRecalculo = async () => {
+  const aplicarRecalculo = async lista => {
     setRodando('recalc');
     try {
       const porPara = {};
-      recalc.mudancas.forEach(x => (porPara[x.para] = porPara[x.para] || []).push(x.id));
-      for (const [para, ids] of Object.entries(porPara)) await transferirClientes(ids, para, 'Recálculo (12 meses)');
+      (lista || recalc.mudancas).forEach(x => (porPara[x.para] = porPara[x.para] || []).push(x.id));
+      for (const [para, ids] of Object.entries(porPara)) await transferirClientes(ids, para, 'Recálculo (vendedor habitual)');
       setRecalc(null);
     } finally {
       setRodando(null);
@@ -22202,7 +22224,7 @@ function CarteiraTab({
       m[d] = (m[d] || 0) + 1;
     });
     return m;
-  }, [semDono, vend12, vendedoresAtivos]);
+  }, [semDono, vendTodos, vendedoresAtivos]);
   const card = {
     background: 'var(--md-s3)',
     border: '1px solid var(--md-ov)',
@@ -22337,7 +22359,7 @@ function CarteiraTab({
       color: 'var(--md-mut)',
       marginTop: 4
     }
-  }, "Reaplica \"quem mais vendeu nos \xFAltimos 12 meses\" a quem nunca foi transferido manualmente. Transfer\xEAncias manuais ficam travadas.")), !recalc && React.createElement("button", {
+  }, "Dono = quem mais vendeu nos 12 meses antes da \xFAltima compra do cliente (parado continua com o vendedor; venda de f\xE9rias n\xE3o troca). Transfer\xEAncias manuais ficam travadas.")), !recalc && React.createElement("button", {
     disabled: !!rodando,
     onClick: analisarRecalculo,
     style: {
@@ -22410,7 +22432,7 @@ function CarteiraTab({
     }
   }, "Cancelar"), React.createElement("button", {
     disabled: !!rodando || !recalc.mudancas.length,
-    onClick: aplicarRecalculo,
+    onClick: () => aplicarRecalculo(recalc.mudancas),
     style: {
       padding: '0 22px',
       background: 'var(--md-pc)',
