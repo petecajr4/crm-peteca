@@ -1860,9 +1860,11 @@ function CRMPeteca() {
   useEffect(() => {
     loadCarteira();
     loadCadastrosExtras();
-    window.kanbanAPI('getUsuarios').then(r => {
+    const carregaVend = () => window.kanbanAPI('getUsuarios').then(r => {
       if (r.ok && r.usuarios.length) setVendedoresAtivos(r.usuarios.filter(u => u.tipo === 'vendedor').map(u => u.nome));
     });
+    carregaVend();
+    window.addEventListener('peteca-usuarios-mudou', carregaVend);
     const f = () => {
       if (!document.hidden) loadCarteira();
     };
@@ -3379,6 +3381,17 @@ function CRMPeteca() {
         textOverflow: "ellipsis"
       }
     }, cfg.txt)), !sidebarCollapsed && React.createElement("button", {
+      onClick: () => setGerenciarVendedoresModal(true),
+      title: "Usu\xE1rios e senhas",
+      style: {
+        width: 40,
+        padding: 0,
+        background: "transparent",
+        border: "1px solid var(--md-ov)",
+        color: "var(--md-onv)",
+        fontSize: 14
+      }
+    }, "\uD83D\uDC65"), !sidebarCollapsed && React.createElement("button", {
       onClick: () => setShowTrocarSenha(true),
       title: "Trocar minha senha",
       style: {
@@ -20769,16 +20782,101 @@ function GerenciarVendedoresModal({
   onClose,
   showToast
 }) {
-  const [usuarios, setUsuarios] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const KANBAN_API = 'https://script.google.com/macros/s/AKfycbyqtgNDt03Z2cfTlbDAUObosynmHaFvXTW4h76X-p3H55_ZFnkKwqKEi6gwFLI9Er4y/exec';
+  const [lista, setLista] = useState(null);
+  const [erro, setErro] = useState('');
+  const [busy, setBusy] = useState('');
+  const [acao, setAcao] = useState(null);
+  const [novo, setNovo] = useState({
+    nome: '',
+    senha: '',
+    tipo: 'vendedor'
+  });
+  const [aviso, setAviso] = useState(null);
+  const eu = (window.PetecaSB.perfil() || {}).nome;
+  const rpc = (fn, body) => window.PetecaSB.rest('rpc/' + fn, {
+    method: 'POST',
+    body: body || {}
+  });
+  const gerar = () => {
+    const c = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+    let s = '';
+    const r = new Uint32Array(9);
+    crypto.getRandomValues(r);
+    r.forEach(x => s += c[x % c.length]);
+    return s;
+  };
+  const carregar = async () => {
+    try {
+      setLista(await rpc('admin_listar_usuarios'));
+      setErro('');
+    } catch (e) {
+      setErro(/admin_listar_usuarios|function|404|PGRST202/i.test(e.message) ? 'sql' : e.message);
+      setLista([]);
+    }
+  };
   useEffect(() => {
-    window.kanbanAPI('getUsuarios').then(res => {
-      if (res.ok) setUsuarios(res.usuarios);
-      setLoading(false);
-    });
+    carregar();
   }, []);
-  return React.createElement("div", {
+  const rodar = async (id, fn, body, ok) => {
+    setBusy(id);
+    try {
+      await rpc(fn, body);
+      showToast(ok, 'success');
+      setAcao(null);
+      await carregar();
+      window.dispatchEvent(new Event('peteca-usuarios-mudou'));
+      return true;
+    } catch (e) {
+      showToast('Erro: ' + e.message, 'error');
+      return false;
+    } finally {
+      setBusy('');
+    }
+  };
+  const criar = async () => {
+    const nome = novo.nome.trim().toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, '_');
+    if (await rodar('novo', 'admin_criar_usuario', {
+      p_nome: nome,
+      p_senha: novo.senha,
+      p_tipo: novo.tipo
+    }, `✅ ${nome} criado`)) {
+      setAviso({
+        nome,
+        senha: novo.senha
+      });
+      setNovo({
+        nome: '',
+        senha: '',
+        tipo: 'vendedor'
+      });
+    }
+  };
+  const fd = d => d ? new Date(d).toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  }) : 'nunca';
+  const inp = {
+    padding: '0 14px',
+    height: 40,
+    borderRadius: 14,
+    border: '1px solid var(--md-ol)',
+    background: 'var(--md-s1)',
+    color: 'var(--md-on)',
+    fontSize: 13,
+    boxSizing: 'border-box'
+  };
+  const bt = cor => ({
+    padding: '0 14px',
+    minHeight: 34,
+    background: 'transparent',
+    border: '1px solid ' + (cor || 'var(--md-ol)'),
+    color: cor || 'var(--md-onv)',
+    fontSize: 12
+  });
+  return ReactDOM.createPortal(React.createElement("div", {
     onClick: onClose,
     style: {
       position: 'fixed',
@@ -20789,227 +20887,362 @@ function GerenciarVendedoresModal({
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      padding: 20,
-      animation: 'fadeIn .2s'
+      padding: 16
     }
   }, React.createElement("div", {
     onClick: e => e.stopPropagation(),
     style: {
       width: '100%',
-      maxWidth: 540,
-      maxHeight: '85vh',
+      maxWidth: 760,
+      maxHeight: '90vh',
       overflowY: 'auto',
-      background: 'color-mix(in srgb,var(--md-s2) 95%,transparent)',
-      backdropFilter: 'blur(20px) saturate(180%)',
-      border: '1px solid rgba(34,197,94,0.3)',
-      borderRadius: 24,
-      boxShadow: '0 20px 60px rgba(0,0,0,0.5)',
-      animation: 'scaleIn .25s'
-    }
-  }, React.createElement("div", {
-    style: {
-      padding: '18px 22px',
-      borderBottom: '1px solid rgba(34,197,94,0.15)',
-      background: 'linear-gradient(135deg,rgba(34,197,94,0.08),rgba(16,185,129,0.05))'
+      background: 'var(--md-s2)',
+      border: '1px solid var(--md-ov)',
+      borderRadius: 28,
+      padding: 24
     }
   }, React.createElement("div", {
     style: {
       display: 'flex',
       justifyContent: 'space-between',
       alignItems: 'center',
-      gap: 10
+      marginBottom: 16
     }
   }, React.createElement("div", null, React.createElement("div", {
     style: {
-      fontSize: 16,
-      fontWeight: 800,
+      fontSize: 18,
+      fontWeight: 700,
       color: 'var(--md-on)'
     }
-  }, "\uD83D\uDC65 Gerenciar Vendedores"), React.createElement("div", {
+  }, "\uD83D\uDC65 Usu\xE1rios do sistema"), React.createElement("div", {
     style: {
-      fontSize: 11,
-      color: 'var(--md-onv)',
+      fontSize: 12,
+      color: 'var(--md-mut)',
       marginTop: 2
     }
-  }, usuarios.length, " usu\xE1rios ativos")), React.createElement("button", {
+  }, "Login = nome \u2022 vendedor entra no vendedor.html, admin no CRM")), React.createElement("button", {
+    className: "md-icon",
     onClick: onClose,
     style: {
-      width: 32,
-      height: 32,
-      borderRadius: 12,
-      background: 'rgba(255,255,255,0.05)',
-      border: '1px solid rgba(255,255,255,0.1)',
+      width: 36,
+      height: 36,
+      padding: 0,
+      background: 'var(--md-s4)',
+      border: 'none',
       color: 'var(--md-onv)',
-      fontSize: 16,
-      fontWeight: 700,
-      cursor: 'pointer'
+      fontSize: 16
     }
-  }, "\u2715"))), React.createElement("div", {
+  }, "\u2715")), erro === 'sql' ? React.createElement("div", {
     style: {
-      padding: 22
+      padding: 16,
+      borderRadius: 18,
+      background: 'rgba(251,191,36,.08)',
+      border: '1px solid rgba(251,191,36,.3)',
+      color: '#fcd34d',
+      fontSize: 13,
+      lineHeight: 1.6
     }
-  }, loading ? React.createElement("div", {
+  }, "\u26A0 Falta rodar o arquivo ", React.createElement("b", null, "supabase-usuarios.sql"), " no SQL Editor do Supabase. Depois feche e abra esta tela de novo.") : !lista ? React.createElement("div", {
     style: {
       padding: 30,
       textAlign: 'center',
-      color: 'var(--md-mut)',
-      fontSize: 12
+      color: 'var(--md-mut)'
     }
-  }, "Carregando...") : React.createElement(React.Fragment, null, React.createElement("div", {
+  }, "Carregando...") : React.createElement(React.Fragment, null, erro && React.createElement("div", {
     style: {
-      fontSize: 11,
-      color: 'var(--md-mut)',
-      textTransform: 'uppercase',
-      letterSpacing: 1,
-      fontWeight: 600,
+      color: '#fca5a5',
+      fontSize: 12,
       marginBottom: 10
     }
-  }, "Usu\xE1rios cadastrados"), React.createElement("div", {
+  }, erro), aviso && React.createElement("div", {
+    style: {
+      padding: 14,
+      borderRadius: 18,
+      background: 'rgba(74,222,128,.08)',
+      border: '1px solid rgba(74,222,128,.3)',
+      marginBottom: 14,
+      fontSize: 13,
+      color: 'var(--md-on)'
+    }
+  }, "Passe para o usu\xE1rio: ", React.createElement("b", null, "Login:"), " ", aviso.nome, " \u2022 ", React.createElement("b", null, "Senha:"), " ", React.createElement("code", {
+    style: {
+      fontSize: 14
+    }
+  }, aviso.senha), React.createElement("button", {
+    onClick: () => {
+      navigator.clipboard.writeText(`Login: ${aviso.nome}\nSenha: ${aviso.senha}`);
+      showToast('Copiado');
+    },
+    style: {
+      ...bt('#4ade80'),
+      marginLeft: 10
+    }
+  }, "\uD83D\uDCCB Copiar"), React.createElement("button", {
+    onClick: () => setAviso(null),
+    style: {
+      ...bt(),
+      marginLeft: 6
+    }
+  }, "OK")), React.createElement("div", {
     style: {
       display: 'flex',
       flexDirection: 'column',
-      gap: 6,
-      marginBottom: 20
+      gap: 8
     }
-  }, usuarios.map(u => React.createElement("div", {
-    key: u.nome,
+  }, lista.map(u => {
+    const sou = u.nome === eu;
+    const ab = acao && acao.nome === u.nome ? acao : null;
+    return React.createElement("div", {
+      key: u.nome,
+      style: {
+        padding: '12px 14px',
+        background: 'var(--md-s3)',
+        border: '1px solid var(--md-ov)',
+        borderRadius: 18,
+        opacity: u.ativo ? 1 : .55
+      }
+    }, React.createElement("div", {
+      style: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        flexWrap: 'wrap'
+      }
+    }, React.createElement("span", {
+      style: {
+        fontSize: 18
+      }
+    }, u.tipo === 'admin' ? '👑' : '👤'), React.createElement("div", {
+      style: {
+        flex: 1,
+        minWidth: 150
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 14,
+        fontWeight: 700,
+        color: 'var(--md-on)'
+      }
+    }, u.nome, sou && React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: 'var(--md-p75)',
+        marginLeft: 6
+      }
+    }, "(voc\xEA)"), !u.ativo && React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: '#fca5a5',
+        marginLeft: 6
+      }
+    }, "DESATIVADO")), React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--md-mut)'
+      }
+    }, u.tipo, " \u2022 \xFAltimo acesso: ", fd(u.ultimo_acesso))), React.createElement("button", {
+      disabled: !!busy,
+      onClick: () => setAcao(ab && ab.tipo === 'senha' ? null : {
+        nome: u.nome,
+        tipo: 'senha',
+        valor: gerar()
+      }),
+      style: bt()
+    }, "\uD83D\uDD11 Senha"), !sou && React.createElement("button", {
+      disabled: !!busy,
+      onClick: () => rodar(u.nome, 'admin_set_tipo', {
+        p_nome: u.nome,
+        p_tipo: u.tipo === 'admin' ? 'vendedor' : 'admin'
+      }, `${u.nome} agora é ${u.tipo === 'admin' ? 'vendedor' : 'admin'}`),
+      style: bt()
+    }, u.tipo === 'admin' ? '↓ Vendedor' : '👑 Admin'), !sou && React.createElement("button", {
+      disabled: !!busy,
+      onClick: () => rodar(u.nome, 'admin_set_ativo', {
+        p_nome: u.nome,
+        p_ativo: !u.ativo
+      }, u.ativo ? `${u.nome} desativado` : `${u.nome} reativado`),
+      style: bt(u.ativo ? '#fbbf24' : '#4ade80')
+    }, u.ativo ? '⏸ Desativar' : '▶ Ativar'), !sou && React.createElement("button", {
+      disabled: !!busy,
+      onClick: () => setAcao(ab && ab.tipo === 'excluir' ? null : {
+        nome: u.nome,
+        tipo: 'excluir',
+        valor: ''
+      }),
+      style: bt('#f87171')
+    }, "\uD83D\uDDD1")), ab && ab.tipo === 'senha' && React.createElement("div", {
+      style: {
+        display: 'flex',
+        gap: 8,
+        marginTop: 10,
+        flexWrap: 'wrap',
+        alignItems: 'center'
+      }
+    }, React.createElement("input", {
+      value: ab.valor,
+      onChange: e => setAcao({
+        ...ab,
+        valor: e.target.value
+      }),
+      style: {
+        ...inp,
+        flex: 1,
+        minWidth: 160,
+        fontFamily: 'monospace'
+      }
+    }), React.createElement("button", {
+      onClick: () => setAcao({
+        ...ab,
+        valor: gerar()
+      }),
+      style: bt()
+    }, "\uD83C\uDFB2 Gerar"), React.createElement("button", {
+      disabled: busy === u.nome || ab.valor.length < 6,
+      onClick: async () => {
+        const s = ab.valor;
+        if (await rodar(u.nome, 'admin_trocar_senha', {
+          p_nome: u.nome,
+          p_senha: s
+        }, `🔑 Senha de ${u.nome} trocada`)) setAviso({
+          nome: u.nome,
+          senha: s
+        });
+      },
+      style: {
+        padding: '0 16px',
+        minHeight: 34,
+        background: 'var(--md-pc)',
+        border: 'none',
+        color: 'var(--md-onpc)',
+        fontSize: 12,
+        fontWeight: 600
+      }
+    }, "Salvar senha")), ab && ab.tipo === 'excluir' && React.createElement("div", {
+      style: {
+        marginTop: 10,
+        fontSize: 12,
+        color: '#fca5a5',
+        lineHeight: 1.6
+      }
+    }, "Excluir apaga o login de vez. ", React.createElement("b", null, "Vendedor que saiu da empresa: use Desativar"), " (mant\xE9m hist\xF3rico e Kanbans). Para excluir, digite ", React.createElement("b", null, u.nome), ":", React.createElement("div", {
+      style: {
+        display: 'flex',
+        gap: 8,
+        marginTop: 6
+      }
+    }, React.createElement("input", {
+      value: ab.valor,
+      onChange: e => setAcao({
+        ...ab,
+        valor: e.target.value.toUpperCase()
+      }),
+      style: {
+        ...inp,
+        flex: 1
+      }
+    }), React.createElement("button", {
+      disabled: ab.valor !== u.nome || !!busy,
+      onClick: () => rodar(u.nome, 'admin_excluir_usuario', {
+        p_nome: u.nome
+      }, `${u.nome} excluído`),
+      style: {
+        padding: '0 16px',
+        minHeight: 34,
+        background: '#dc2626',
+        border: 'none',
+        color: '#fff',
+        fontSize: 12,
+        fontWeight: 600
+      }
+    }, "Excluir de vez"))));
+  })), React.createElement("div", {
+    style: {
+      marginTop: 18,
+      padding: 16,
+      background: 'var(--md-s3)',
+      border: '1px solid var(--md-ov)',
+      borderRadius: 20
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600,
+      color: 'var(--md-on)',
+      marginBottom: 10
+    }
+  }, "\u2795 Novo usu\xE1rio"), React.createElement("div", {
     style: {
       display: 'flex',
-      alignItems: 'center',
-      gap: 10,
-      padding: '10px 12px',
-      background: 'rgba(255,255,255,0.02)',
-      border: '1px solid rgba(255,255,255,0.05)',
-      borderRadius: 14
+      gap: 8,
+      flexWrap: 'wrap'
     }
-  }, React.createElement("span", {
+  }, React.createElement("input", {
+    placeholder: "Nome (ex.: CARLOS)",
+    value: novo.nome,
+    onChange: e => setNovo({
+      ...novo,
+      nome: e.target.value.toUpperCase()
+    }),
     style: {
-      fontSize: 16
+      ...inp,
+      flex: 1,
+      minWidth: 150
     }
-  }, u.tipo === 'admin' ? '👑' : '👤'), React.createElement("div", {
+  }), React.createElement("div", {
     style: {
-      flex: 1
+      display: 'flex',
+      gap: 6,
+      flex: 1,
+      minWidth: 200
     }
-  }, React.createElement("div", {
+  }, React.createElement("input", {
+    placeholder: "Senha",
+    value: novo.senha,
+    onChange: e => setNovo({
+      ...novo,
+      senha: e.target.value
+    }),
     style: {
-      fontSize: 13,
-      color: 'var(--md-on)',
-      fontWeight: 700
+      ...inp,
+      flex: 1,
+      fontFamily: 'monospace'
     }
-  }, u.nome), React.createElement("div", {
+  }), React.createElement("button", {
+    onClick: () => setNovo({
+      ...novo,
+      senha: gerar()
+    }),
+    style: bt()
+  }, "\uD83C\uDFB2")), React.createElement("select", {
+    value: novo.tipo,
+    onChange: e => setNovo({
+      ...novo,
+      tipo: e.target.value
+    }),
+    style: inp
+  }, React.createElement("option", {
+    value: "vendedor"
+  }, "Vendedor"), React.createElement("option", {
+    value: "admin"
+  }, "Admin")), React.createElement("button", {
+    disabled: busy === 'novo' || novo.nome.trim().length < 2 || novo.senha.length < 6,
+    onClick: criar,
     style: {
-      fontSize: 10,
-      color: 'var(--md-mut)',
-      textTransform: 'uppercase',
-      letterSpacing: 1
-    }
-  }, u.tipo))))), React.createElement("div", {
-    style: {
-      padding: 16,
-      background: 'rgba(34,197,94,0.05)',
-      border: '1px solid rgba(34,197,94,0.15)',
-      borderRadius: 14
-    }
-  }, React.createElement("div", {
-    style: {
-      fontSize: 12,
-      fontWeight: 700,
-      color: '#86efac',
-      marginBottom: 8
-    }
-  }, "\uD83D\uDCA1 Para gerenciar usu\xE1rios e senhas"), React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: 'var(--md-onv)',
-      lineHeight: 1.6
-    }
-  }, "1. Abra sua planilha ", React.createElement("strong", {
-    style: {
-      color: 'var(--md-on)'
-    }
-  }, "CRM_Kanban"), React.createElement("br", null), "2. V\xE1 na aba ", React.createElement("strong", {
-    style: {
-      color: 'var(--md-on)'
-    }
-  }, "Usuarios"), React.createElement("br", null), "3. Para ", React.createElement("strong", {
-    style: {
-      color: 'var(--md-on)'
-    }
-  }, "trocar senha"), ": edite a coluna \"senha\"", React.createElement("br", null), "4. Para ", React.createElement("strong", {
-    style: {
-      color: 'var(--md-on)'
-    }
-  }, "desativar"), ": mude \"sim\" \u2192 \"nao\" na coluna \"ativo\"", React.createElement("br", null), "5. Para ", React.createElement("strong", {
-    style: {
-      color: 'var(--md-on)'
-    }
-  }, "adicionar novo"), ": nova linha com nome, senha, tipo (vendedor/admin), ativo"), React.createElement("button", {
-    onClick: () => {
-      window.open('https://supabase.com/dashboard/project/ovlcnkvgwbdjmiahpxes/auth/users', '_blank');
-    },
-    style: {
-      marginTop: 10,
-      padding: '7px 14px',
-      background: 'linear-gradient(135deg,#16a34a,#22c55e)',
+      padding: '0 20px',
+      background: 'var(--md-pc)',
       border: 'none',
-      borderRadius: 12,
-      color: '#fff',
-      fontSize: 11,
-      fontWeight: 700,
-      cursor: 'pointer',
-      boxShadow: '0 2px 8px rgba(34,197,94,0.3)'
+      color: 'var(--md-onpc)',
+      fontSize: 13,
+      fontWeight: 600
     }
-  }, "\uD83D\uDD17 Abrir usu\xE1rios no Supabase"))))));
+  }, busy === 'novo' ? 'Criando...' : 'Criar')), React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--md-mut)',
+      marginTop: 8
+    }
+  }, "Senha m\xEDnima 6 caracteres. O usu\xE1rio pode trocar depois pelo \uD83D\uDD11. Novo vendedor aparece na carteira e nos Kanbans."))))), document.body);
 }
-const cadNorm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
-const CAD_SOCIETARIO = /\b(LTDA|ME|EPP|EIRELI|MEI|S A|SA|CIA|E|DE|DA|DO|DAS|DOS|EM|COM|COMERCIO|COMERCIAL|IND|INDUSTRIA|SERV|SERVICOS|EMPREENDIMENTOS?)\b/g;
-const CAD_GENERICOS = /\b(COMUNICACAO|COMUNICACA|COMUNICACOES|VISUAL|VISUAIS|GRAFICA|GRAF|BRINDES|ADESIVOS?|PUBLICIDADE|PROPAGANDA|TOLDOS?|IMPRESSAO|IMPRESSOES|DIGITAL|DESIGN|DESIGNER|ARTES?|ARTS|PAINEIS|LETREIROS?|SINALIZACAO|PLACAS|LUMINOSOS|ENVELOPAMENTO|SOLUCOES|STUDIO|PRINT|MARKETING|EDITORA|COPIADORA|FOTO|LETRAS)\b/g;
-const cadNomeBase = (s, cidade) => {
-  let t = ' ' + cadNorm(s).replace(/\d+/g, ' ') + ' ';
-  t = t.replace(CAD_SOCIETARIO, ' ');
-  cadNorm(cidade).split(' ').filter(w => w.length >= 4).forEach(w => {
-    t = t.replace(new RegExp('\\b' + w + '\\b', 'g'), ' ');
-  });
-  return t.replace(/\s+/g, ' ').trim();
-};
-const cadNucleo = (s, cidade) => cadNomeBase(s, cidade).replace(CAD_GENERICOS, ' ').replace(/\s+/g, ' ').trim();
-const cadDoc = s => {
-  const m = String(s || '').match(/\d[\d.\-\/]{6,}\d/g) || [];
-  for (const x of m) {
-    const d = x.replace(/\D/g, '');
-    if (d.length >= 8) return d;
-  }
-  return '';
-};
-const cadTel = t => {
-  const d = String(t || '').replace(/\D/g, '');
-  return d.length >= 8 ? d.slice(-8) : '';
-};
-const cadSim = (a, b) => {
-  if (!a || !b) return 0;
-  if (a === b) return 1;
-  const m = a.length,
-    n = b.length;
-  let p = Array.from({
-    length: n + 1
-  }, (_, j) => j);
-  for (let i = 1; i <= m; i++) {
-    const q = [i];
-    for (let j = 1; j <= n; j++) q[j] = Math.min(p[j] + 1, q[j - 1] + 1, p[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
-    p = q;
-  }
-  return 1 - p[n] / Math.max(m, n);
-};
-const cadNomeLimpo = nc => {
-  const s = String(nc || '').split(/\s{2,}/)[0].trim();
-  return /EMISS[AÃ]O|P[AÁ]GINA/i.test(s) || s.length < 2 ? '' : s;
-};
-const cadParKey = (a, b) => {
-  const x = String(a),
-    y = String(b);
-  return x < y ? x + '|' + y : y + '|' + x;
-};
-const fmtD = d => d ? d.slice(8, 10) + '/' + d.slice(5, 7) + '/' + d.slice(0, 4) : '—';
 function cadStatsVendas(vendas, resolveAlias) {
   const st = {};
   Object.values(vendas).forEach(arr => (arr || []).forEach(v => {
