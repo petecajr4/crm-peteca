@@ -212,7 +212,7 @@ window.storage={get:function(k){return o().then(function(d){return new Promise(f
   // SINCRONIZAÇÃO DOS DADOS DO CRM (IndexedDB local <-> tabela crm_kv)
   // O navegador vira cache; a nuvem é a fonte oficial.
   // ------------------------------------------------------------------
-  var SYNC_RE = /^(peteca_crm_clientes|peteca_crm_mods|peteca_crm_vendas_index|peteca_vendas_ano_\d{4}|peteca_anotacoes_clientes|peteca_alias_clientes|peteca_metas)$/;
+  var SYNC_RE = /^(peteca_crm_clientes|peteca_crm_mods|peteca_crm_vendas_index|peteca_vendas_ano_\d{4}|peteca_anotacoes_clientes|peteca_alias_clientes|peteca_metas|peteca_nao_duplicados|peteca_mesclagens|peteca_carteira_ok)$/;
   var META_KEY = 'peteca_sync_meta', PEND_KEY = 'peteca_sync_pending';
   var meta = ler(META_KEY, {}), pend = ler(PEND_KEY, {}), seq = Date.now();
   var raw = null, flushing = null, timer = null, autoIv = null;
@@ -504,6 +504,61 @@ window.storage={get:function(k){return o().then(function(d){return new Promise(f
     if (!fn) return Promise.resolve({ ok: false, error: 'Ação desconhecida: ' + action });
     return Promise.resolve().then(function () { return fn(payload || {}); })
       .catch(function (e) { return { ok: false, error: e.message || String(e) }; });
+  };
+
+
+  // ------------------------------------------------------------------
+  // CARTEIRA — dono de cada cliente (tabela própria, 1 linha por cliente)
+  // ------------------------------------------------------------------
+  function lotes(arr, n) { var out = []; for (var i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; }
+  window.PetecaCarteira = {
+    listar: function () {
+      // pagina de 1000 em 1000 (limite padrão do PostgREST)
+      var todos = [];
+      function pag(off) {
+        return rest('carteira?select=cliente_id,vendedor,desde,por&order=cliente_id&limit=1000&offset=' + off).then(function (r) {
+          todos = todos.concat(r || []);
+          return (r && r.length === 1000) ? pag(off + 1000) : todos;
+        });
+      }
+      return pag(0);
+    },
+    historico: function (cid) {
+      return rest('carteira_historico?select=*&cliente_id=eq.' + enc(String(cid)) + '&order=em.desc&limit=100');
+    },
+    recentes: function (n) { return rest('carteira_historico?select=*&order=em.desc&limit=' + (n || 50)); },
+    // itens: [{cliente_id, de, para}] • move também os Kanbans abertos
+    transferir: function (itens, motivo, onProg) {
+      var por = nomeAtual(), agora = new Date().toISOString();
+      itens = (itens || []).filter(function (x) { return x && x.para && x.de !== x.para; });
+      if (!itens.length) return Promise.resolve({ ok: true, transferidos: 0, kanbans: 0 });
+      var grupos = lotes(itens, 400), feitos = 0, kmov = 0;
+      return grupos.reduce(function (p, g) {
+        return p.then(function () {
+          return rest('carteira?on_conflict=cliente_id', { method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal',
+            body: g.map(function (x) { return { cliente_id: String(x.cliente_id), vendedor: x.para, desde: agora, por: por }; }) });
+        }).then(function () {
+          return rest('carteira_historico', { method: 'POST', prefer: 'return=minimal',
+            body: g.map(function (x) { return { cliente_id: String(x.cliente_id), de: x.de || null, para: x.para, por: por, motivo: motivo || null }; }) });
+        }).then(function () {
+          // Kanbans abertos acompanham o cliente
+          var lista = g.map(function (x) { return '"' + String(x.cliente_id).replace(/"/g, '') + '"'; }).join(',');
+          return rest('kanbans?select=id,cliente_id,vendedor&finalizado=eq.false&cliente_id=in.(' + enc(lista) + ')').then(function (ks) {
+            var destino = {}; g.forEach(function (x) { destino[String(x.cliente_id)] = x.para; });
+            return (ks || []).reduce(function (p2, k) {
+              var para = destino[String(k.cliente_id)];
+              if (!para || para === 'EMPRESA' || para === k.vendedor) return p2;
+              return p2.then(function () {
+                return rest('kanbans?id=eq.' + k.id, { method: 'PATCH', body: { vendedor: para }, prefer: 'return=minimal' });
+              }).then(function () {
+                kmov++;
+                return hist(k.id, 'transferido', { por: por, de: k.vendedor, para: para, detalhes: motivo || 'Transferência de carteira' });
+              });
+            }, Promise.resolve());
+          }).catch(function () {});
+        }).then(function () { feitos += g.length; if (onProg) onProg(feitos, itens.length); });
+      }, Promise.resolve()).then(function () { return { ok: true, transferidos: feitos, kanbans: kmov }; });
+    }
   };
 
   // ------------------------------------------------------------------
@@ -1080,12 +1135,14 @@ function CRMPeteca() {
         logs.push(`Meses detectados: ${mesesList.length} (${mesesList.join(', ')})`);
         mesesList.forEach(m => {
           logs.push(`   📅 ${m}: ${mesesMap[m].count} vendas — R$ ${mesesMap[m].valor.toLocaleString('pt-BR', {
-            minimumFractionDigits: 2
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
           })}`);
         });
         const totalValor = merged.reduce((s, v) => s + v.valorLiquido, 0);
         logs.push(`Valor total: R$ ${totalValor.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         })}`);
       }
       setParsedPreview({
@@ -1443,7 +1500,7 @@ function CRMPeteca() {
     loadAlias();
   }, []);
   useEffect(() => {
-    const tabKeys = ["dashboard", "clientes", "importar", "cidade", "produtos", "vendedores", "fluxo", "abandono", "metas"];
+    const tabKeys = ["dashboard", "clientes", "cadastros", "carteira", "importar", "cidade", "produtos", "vendedores", "fluxo"];
     const handler = e => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
@@ -1674,6 +1731,8 @@ function CRMPeteca() {
       r: mod.r !== undefined ? mod.r : client.r,
       nu: mod.nu !== undefined ? mod.nu : client.nu,
       n: mod.n !== undefined && mod.n !== '' ? mod.n : client.n,
+      t: mod.t || client.t || '',
+      cep: mod.cep || '',
       notes: mod.notes || ""
     };
   }, [mods]);
@@ -1691,6 +1750,214 @@ function CRMPeteca() {
   const aliasSourceIds = useMemo(() => {
     return new Set(Object.keys(aliasClientes).map(String));
   }, [aliasClientes]);
+  const [carteira, setCarteira] = useState({});
+  const [carteiraOk, setCarteiraOk] = useState(false);
+  const [vendedoresAtivos, setVendedoresAtivos] = useState(['ANDERSON', 'ANE', 'DENIS', 'LEX', 'REGINALDO', 'RODRIGO']);
+  const [naoDup, setNaoDup] = useState({});
+  const [mesclagens, setMesclagens] = useState([]);
+  const [carteiraConflOk, setCarteiraConflOk] = useState({});
+  const [carteiraFiltro, setCarteiraFiltro] = useState('TODAS');
+  const [loteTransf, setLoteTransf] = useState(null);
+  const loadCarteira = async () => {
+    try {
+      const r = await window.PetecaCarteira.listar();
+      const m = {};
+      (r || []).forEach(x => {
+        m[String(x.cliente_id)] = x;
+      });
+      setCarteira(m);
+      setCarteiraOk(true);
+    } catch (e) {
+      console.warn('carteira:', e);
+      setCarteiraOk(/relation|does not exist|42P01|404/i.test(e.message) ? 'erro' : true);
+    }
+  };
+  const lerKV = async (k, def) => {
+    try {
+      const r = await window.storage.get(k);
+      return r && r.value ? JSON.parse(r.value) : def;
+    } catch (e) {
+      return def;
+    }
+  };
+  const loadCadastrosExtras = async () => {
+    setNaoDup(await lerKV('peteca_nao_duplicados', {}));
+    setMesclagens(await lerKV('peteca_mesclagens', []));
+    setCarteiraConflOk(await lerKV('peteca_carteira_ok', {}));
+  };
+  const salvarNaoDup = async v => {
+    setNaoDup(v);
+    await window.storage.set('peteca_nao_duplicados', JSON.stringify(v));
+  };
+  const salvarMesclagens = async v => {
+    setMesclagens(v);
+    await window.storage.set('peteca_mesclagens', JSON.stringify(v));
+  };
+  const salvarCarteiraConflOk = async v => {
+    setCarteiraConflOk(v);
+    await window.storage.set('peteca_carteira_ok', JSON.stringify(v));
+  };
+  useEffect(() => {
+    loadCarteira();
+    loadCadastrosExtras();
+    window.kanbanAPI('getUsuarios').then(r => {
+      if (r.ok && r.usuarios.length) setVendedoresAtivos(r.usuarios.filter(u => u.tipo === 'vendedor').map(u => u.nome));
+    });
+    const f = () => {
+      if (!document.hidden) loadCarteira();
+    };
+    document.addEventListener('visibilitychange', f);
+    const g = e => {
+      const ks = e.detail && e.detail.keys || [];
+      if (ks.some(k => ['peteca_nao_duplicados', 'peteca_mesclagens', 'peteca_carteira_ok'].includes(k))) loadCadastrosExtras();
+    };
+    window.addEventListener('peteca-sync-changed', g);
+    return () => {
+      document.removeEventListener('visibilitychange', f);
+      window.removeEventListener('peteca-sync-changed', g);
+    };
+  }, []);
+  const donoDe = useCallback(id => {
+    const r = String(resolveAlias(id));
+    return (carteira[r] || {}).vendedor || null;
+  }, [carteira, resolveAlias]);
+  const transferirClientes = async (ids, para, motivo) => {
+    const unicos = [...new Set(ids.map(i => String(resolveAlias(i))))];
+    const itens = unicos.map(id => ({
+      cliente_id: id,
+      de: (carteira[id] || {}).vendedor || null,
+      para
+    }));
+    try {
+      const r = await window.PetecaCarteira.transferir(itens, motivo);
+      await loadCarteira();
+      if (r.kanbans) {
+        try {
+          loadKanbansAdmin();
+        } catch (e) {}
+      }
+      showToast(`👤 ${r.transferidos} cliente(s) → ${para}${r.kanbans ? ` • ${r.kanbans} Kanban(s) movido(s)` : ''}`);
+      return r;
+    } catch (e) {
+      showToast('Erro na transferência: ' + e.message, 'error');
+      throw e;
+    }
+  };
+  const mesclarGrupos = async grupos => {
+    if (!grupos.length) return;
+    await criarSnapshot(grupos.length > 1 ? `Antes de mesclar ${grupos.length} grupos` : 'Antes de mesclar cadastros');
+    const novoAlias = {
+      ...aliasClientes
+    };
+    const novosMods = {
+      ...mods
+    };
+    const logs = [];
+    const herdaCarteira = {};
+    const porId = {};
+    clientes.forEach(c => {
+      porId[String(c.i)] = c;
+    });
+    grupos.forEach(g => {
+      const P = String(g.principal);
+      const outros = g.membros.map(String).filter(x => x !== P);
+      const pm = {
+        ...(novosMods[P] || {})
+      };
+      const antes = {
+        n: pm.n,
+        c: pm.c,
+        r: pm.r,
+        nu: pm.nu,
+        b: pm.b,
+        t: pm.t,
+        cep: pm.cep,
+        d: pm.d
+      };
+      const dadosP = getClientData(porId[P] || {
+        i: P
+      });
+      outros.forEach(o => {
+        novoAlias[o] = P;
+        Object.keys(novoAlias).forEach(k => {
+          if (String(novoAlias[k]) === o) novoAlias[k] = P;
+        });
+        const d = getClientData(porId[o] || {
+          i: o
+        });
+        const mo = novosMods[o] || {};
+        if ((!dadosP.c || dadosP.c === 'CADASTRO PENDENTE') && d.c && d.c !== 'CADASTRO PENDENTE') {
+          pm.c = d.c;
+          pm.r = d.r;
+          pm.nu = d.nu;
+          pm.b = d.b;
+          dadosP.c = d.c;
+        }
+        if (!pm.t && !dadosP.t && mo.t) pm.t = mo.t;
+        if (!pm.cep && mo.cep) pm.cep = mo.cep;
+        if (!carteira[P] && carteira[o] && !herdaCarteira[P]) herdaCarteira[P] = carteira[o].vendedor;
+      });
+      delete novoAlias[P];
+      if (g.nomeFinal && g.nomeFinal !== dadosP.n) pm.n = g.nomeFinal;
+      const ideP = dadosP.d;
+      if (ideP) {
+        const resto = clientes.filter(c => getClientData(c).d === ideP && !g.membros.map(String).includes(String(c.i)) && !novoAlias[String(c.i)]);
+        if (!resto.length) pm.d = null;
+      }
+      novosMods[P] = pm;
+      logs.push({
+        id: Date.now() + '_' + P,
+        principal: P,
+        outros,
+        nomeFinal: pm.n || dadosP.n,
+        antes,
+        motivos: g.motivos || [],
+        em: new Date().toISOString(),
+        por: adminName
+      });
+    });
+    await saveMods(novosMods);
+    await salvarAlias(novoAlias);
+    await salvarMesclagens([...(mesclagens || []), ...logs]);
+    for (const [P, dono] of Object.entries(herdaCarteira)) {
+      try {
+        await window.PetecaCarteira.transferir([{
+          cliente_id: P,
+          de: null,
+          para: dono
+        }], 'Herdado na mesclagem');
+      } catch (e) {}
+    }
+    if (Object.keys(herdaCarteira).length) loadCarteira();
+    showToast(`🔗 ${grupos.length} mesclagem(ns) feita(s) • ${logs.reduce((s, l) => s + l.outros.length, 0)} cadastro(s) absorvido(s)`, 'success', {
+      duration: 5000
+    });
+  };
+  const desfazerMesclagem = async logId => {
+    const log = (mesclagens || []).find(m => m.id === logId);
+    if (!log) return;
+    await criarSnapshot('Antes de desfazer mesclagem');
+    const novoAlias = {
+      ...aliasClientes
+    };
+    log.outros.forEach(o => {
+      if (String(novoAlias[o]) === String(log.principal)) delete novoAlias[o];
+    });
+    const novosMods = {
+      ...mods
+    };
+    const pm = {
+      ...(novosMods[log.principal] || {})
+    };
+    Object.entries(log.antes || {}).forEach(([k, v]) => {
+      if (v === undefined) delete pm[k];else pm[k] = v;
+    });
+    novosMods[log.principal] = pm;
+    await saveMods(novosMods);
+    await salvarAlias(novoAlias);
+    await salvarMesclagens((mesclagens || []).filter(m => m.id !== logId));
+    showToast(`↩ Mesclagem desfeita: ${log.outros.length} cadastro(s) separado(s) de novo`);
+  };
   const inativosIds = useMemo(() => {
     const s = new Set();
     clientes.forEach(c => {
@@ -1719,6 +1986,7 @@ function CRMPeteca() {
     list = list.filter(c => !aliasSourceIds.has(String(c.i)));
     if (statusFiltro === "ATIVOS") list = list.filter(c => c.a === 1 && c.c !== "CADASTRO PENDENTE");else if (statusFiltro === "INATIVOS") list = list.filter(c => c.a === 0);else if (statusFiltro === "PENDENTES") list = list.filter(c => c.c === "CADASTRO PENDENTE");
     if (cidadeFiltro !== "TODAS") list = list.filter(c => c.c === cidadeFiltro);
+    if (carteiraFiltro !== 'TODAS') list = list.filter(c => carteiraFiltro === 'SEM' ? !carteira[String(c.i)] : (carteira[String(c.i)] || {}).vendedor === carteiraFiltro);
     if (ideFiltro !== "TODOS") {
       if (ideFiltro === "COM_IDE") list = list.filter(c => c.d);else if (ideFiltro === "SEM_IDE") list = list.filter(c => !c.d);else list = list.filter(c => c.d === ideFiltro);
     }
@@ -1727,7 +1995,7 @@ function CRMPeteca() {
       list = list.filter(c => c.n.toLowerCase().includes(s) || String(c.i).includes(s) || c.d && c.d.toLowerCase().includes(s));
     }
     return list;
-  }, [clientes, mods, search, cidadeFiltro, ideFiltro, statusFiltro, getClientData, aliasSourceIds]);
+  }, [clientes, mods, search, cidadeFiltro, ideFiltro, statusFiltro, getClientData, aliasSourceIds, carteiraFiltro, carteira]);
   const paged = useMemo(() => {
     const start = page * PAGE_SIZE;
     return filtered.slice(start, start + PAGE_SIZE);
@@ -2890,6 +3158,14 @@ function CRMPeteca() {
     label: "Clientes",
     icon: "👥"
   }, {
+    key: "cadastros",
+    label: "Cadastros",
+    icon: "🧹"
+  }, {
+    key: "carteira",
+    label: "Carteira",
+    icon: "👤"
+  }, {
     key: "importar",
     label: "Importar",
     icon: "📥"
@@ -3578,16 +3854,19 @@ function CRMPeteca() {
     })), React.createElement(PrintExportButtons, {
       onPrint: () => {
         const rows = topClientes.map((c, i) => `<tr><td>${i + 1}</td><td>${c.nome}${c.isIde ? ' 🔗' : ''}</td><td>${c.cidade}</td><td>${c.vendas}</td><td>R$ ${c.valor.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         })}</td></tr>`).join('');
         printContent('Dashboard — Top Clientes', `
                       <div class="kpi-row">
                         <div class="kpi"><div class="kpi-label">Faturamento</div><div class="kpi-value">R$ ${fatTotal.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         })}</div></div>
                         <div class="kpi"><div class="kpi-label">Vendas</div><div class="kpi-value">${qtdVendas}</div></div>
                         <div class="kpi"><div class="kpi-label">Ticket Médio</div><div class="kpi-value">R$ ${ticketMedio.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         })}</div></div>
                         <div class="kpi"><div class="kpi-label">Clientes</div><div class="kpi-value">${clientesUnicos}</div></div>
                       </div>
@@ -3607,14 +3886,16 @@ function CRMPeteca() {
     }, [{
       label: "Faturamento",
       value: "R$ " + fatTotal.toLocaleString('pt-BR', {
-        minimumFractionDigits: 2
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
       }),
       icon: "💰",
       color: "#22c55e"
     }, {
       label: "Ticket Médio",
       value: "R$ " + ticketMedio.toLocaleString('pt-BR', {
-        minimumFractionDigits: 2
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
       }),
       icon: "🎯",
       color: "#3b82f6"
@@ -3839,7 +4120,8 @@ function CRMPeteca() {
               color: cor[0]
             }
           }, "R$ ", valor.toLocaleString('pt-BR', {
-            minimumFractionDigits: 2
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
           })), React.createElement("div", {
             style: {
               fontSize: 9,
@@ -4560,14 +4842,16 @@ function CRMPeteca() {
       }, [{
         label: "Faturamento",
         value: "R$ " + dadosCidade.valor.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         }),
         icon: "💰",
         color: "#22c55e"
       }, {
         label: "Ticket Médio",
         value: "R$ " + (dadosCidade.valor / dadosCidade.vendas).toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         }),
         icon: "🎯",
         color: "#3b82f6"
@@ -4710,7 +4994,8 @@ function CRMPeteca() {
         return React.createElement("div", {
           key: mes,
           title: `${mes.slice(5)}/${anoNum}: R$ ${d.valor.toLocaleString('pt-BR', {
-            minimumFractionDigits: 2
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
           })} (${d.count} vendas)`,
           style: {
             flex: "0 0 18px",
@@ -5119,7 +5404,8 @@ function CRMPeteca() {
     })), React.createElement(PrintExportButtons, {
       onPrint: () => {
         const rows = cidadesFiltradas.map((c, i) => `<tr><td>${i + 1}</td><td>${c.cidade}</td><td>${c.clientesUnicos}</td><td>${c.vendas}</td><td>R$ ${c.valor.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         })}</td></tr>`).join('');
         printContent(`Ranking de Cidades (${cidadesFiltradas.length})`, `<table><thead><tr><th>#</th><th>Cidade</th><th>Clientes</th><th>Vendas</th><th>Faturamento</th></tr></thead><tbody>${rows}</tbody></table>`);
       },
@@ -5141,7 +5427,8 @@ function CRMPeteca() {
     }, {
       label: "Faturamento Total",
       value: "R$ " + totalFat.toLocaleString('pt-BR', {
-        minimumFractionDigits: 2
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
       }),
       icon: "💰",
       color: "#22c55e"
@@ -5153,7 +5440,8 @@ function CRMPeteca() {
     }, {
       label: "Ticket Médio",
       value: "R$ " + (totalFat / salesFilt.length).toLocaleString('pt-BR', {
-        minimumFractionDigits: 2
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
       }),
       icon: "🎯",
       color: "#8b5cf6"
@@ -5554,7 +5842,8 @@ function CRMPeteca() {
       }, [{
         label: "Faturamento",
         value: "R$ " + p.valor.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         }),
         icon: "💰",
         color: "#22c55e"
@@ -5710,7 +5999,8 @@ function CRMPeteca() {
         return React.createElement("div", {
           key: mes,
           title: `${mes.slice(5)}/${anoNum}: R$ ${d.valor.toLocaleString('pt-BR', {
-            minimumFractionDigits: 2
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
           })} (${d.qtde.toFixed(0)} un)`,
           style: {
             flex: "0 0 18px",
@@ -6102,7 +6392,8 @@ function CRMPeteca() {
     })), React.createElement(PrintExportButtons, {
       onPrint: () => {
         const rows = prodsABC.map((p, i) => `<tr><td>${i + 1}</td><td>${p.codigo}</td><td>${p.descricao}</td><td>${p.classe}</td><td>${p.vendas}</td><td>${p.qtde.toFixed(0)}</td><td>R$ ${p.valor.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         })}</td></tr>`).join('');
         printContent(`Produtos — Curva ABC (${prodsABC.length})`, `<table><thead><tr><th>#</th><th>Código</th><th>Produto</th><th>ABC</th><th>Vendas</th><th>Qtde</th><th>Faturamento</th></tr></thead><tbody>${rows}</tbody></table>`);
       },
@@ -6124,7 +6415,8 @@ function CRMPeteca() {
     }, {
       label: "Faturamento Total",
       value: "R$ " + totalFatProd.toLocaleString('pt-BR', {
-        minimumFractionDigits: 2
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
       }),
       icon: "💰",
       color: "#22c55e"
@@ -7055,14 +7347,16 @@ function CRMPeteca() {
       }, [{
         label: "Faturamento",
         value: "R$ " + vd.valor.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         }),
         icon: "💰",
         color: "#22c55e"
       }, {
         label: "Ticket Médio",
         value: "R$ " + (vd.valor / vd.vendas).toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         }),
         icon: "🎯",
         color: "#3b82f6"
@@ -7211,7 +7505,8 @@ function CRMPeteca() {
         return React.createElement("div", {
           key: mes,
           title: `${mes.slice(5)}/${anoNum}: R$ ${d.valor.toLocaleString('pt-BR', {
-            minimumFractionDigits: 2
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
           })} (${d.count} vendas)`,
           style: {
             flex: "0 0 18px",
@@ -7724,7 +8019,8 @@ function CRMPeteca() {
     }, {
       label: "Faturamento Total",
       value: "R$ " + totalFat.toLocaleString('pt-BR', {
-        minimumFractionDigits: 2
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
       }),
       icon: "💰",
       color: "#22c55e"
@@ -7736,7 +8032,8 @@ function CRMPeteca() {
     }, {
       label: "Ticket Médio Geral",
       value: "R$ " + (totalFat / salesFilt.length).toLocaleString('pt-BR', {
-        minimumFractionDigits: 2
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
       }),
       icon: "🎯",
       color: "#8b5cf6"
@@ -7813,7 +8110,8 @@ function CRMPeteca() {
       return React.createElement("div", {
         key: mes,
         title: `${mes}: R$ ${totalMes.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         })}`,
         style: {
           flex: "0 0 28px",
@@ -7899,11 +8197,13 @@ function CRMPeteca() {
     }, vendArr.length, " vendedores"), React.createElement(PrintExportButtons, {
       onPrint: () => {
         const rows = vendArr.map((v, i) => `<tr><td>${i + 1}</td><td>${v.nome}</td><td>${v.vendas}</td><td>${v.clientesUnicos}</td><td>R$ ${v.valor.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         })}</td><td>${(v.valor / totalFat * 100).toFixed(1)}%</td></tr>`).join('');
         printContent(`Vendedores (${vendArr.length})`, `
                           <div class="kpi-row"><div class="kpi"><div class="kpi-label">Faturamento Total</div><div class="kpi-value">R$ ${totalFat.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         })}</div></div></div>
                           <table><thead><tr><th>#</th><th>Vendedor</th><th>Vendas</th><th>Clientes</th><th>Faturamento</th><th>% Total</th></tr></thead><tbody>${rows}</tbody></table>`);
       },
@@ -8503,7 +8803,8 @@ function CRMPeteca() {
     }, "\u2715 Limpar filtros"), React.createElement("button", {
       onClick: () => {
         const rows = clientesFiltrados.slice(0, 200).map(c => `<tr><td>${c.nome}${c.isIde ? ' 🔗' : ''}</td><td>${c.cidade}</td><td>R$ ${c.total.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         })}</td><td>${c.vendas}</td><td>${c.diasSemCompra}d</td><td>${c.status}</td></tr>`).join('');
         printContent(`Fluxo de Vendas (${clientesFiltrados.length} clientes)`, `<table><thead><tr><th>Cliente</th><th>Cidade</th><th>Total</th><th>Vendas</th><th>Dias s/ Compra</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`);
       },
@@ -8661,7 +8962,8 @@ function CRMPeteca() {
         }
       }, React.createElement("div", {
         title: `${mesesNomes[i]}: R$ ${s.valor.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         })} (${s.vendas} vendas)`,
         style: {
           width: "100%",
@@ -9032,7 +9334,8 @@ function CRMPeteca() {
           }
         }, React.createElement("div", {
           title: dado ? `${m.slice(5)}/${m.slice(0, 4)}: R$ ${valor.toLocaleString('pt-BR', {
-            minimumFractionDigits: 2
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
           })} (${dado.count} vendas) — Clique para detalhes` : `${m.slice(5)}/${m.slice(0, 4)}: sem compras`,
           style: {
             width: "100%",
@@ -9285,7 +9588,8 @@ function CRMPeteca() {
         color: "#22c55e"
       }
     }, "R$ ", fluxoCelulaModal.dado.valor.toLocaleString('pt-BR', {
-      minimumFractionDigits: 2
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
     })), React.createElement("div", {
       style: {
         fontSize: 10,
@@ -9327,7 +9631,8 @@ function CRMPeteca() {
         color: "#f59e0b"
       }
     }, "R$ ", (fluxoCelulaModal.dado.valor / fluxoCelulaModal.dado.count).toLocaleString('pt-BR', {
-      minimumFractionDigits: 2
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
     })), React.createElement("div", {
       style: {
         fontSize: 10,
@@ -9395,7 +9700,8 @@ function CRMPeteca() {
         color: "#22c55e"
       }
     }, "R$ ", (v.valorLiquido || 0).toLocaleString('pt-BR', {
-      minimumFractionDigits: 2
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
     }))), (v.produtos || []).length > 0 && React.createElement("div", {
       style: {
         paddingTop: 6,
@@ -9428,7 +9734,8 @@ function CRMPeteca() {
         fontWeight: 600
       }
     }, "R$ ", (p.vlrTotal || 0).toLocaleString('pt-BR', {
-      minimumFractionDigits: 2
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
     })))))))))));
   })(), tab === "abandono" && (() => {
     const allSalesRaw = [];
@@ -9484,7 +9791,7 @@ function CRMPeteca() {
       clienteAtivo[c.i] = c.a;
     });
     const cidadesDisp = [...new Set(allSales.map(v => clienteToCidade[v.clienteId]).filter(Boolean))].sort();
-    const vendedoresDisp = filtrarVendedoresAtivos([...new Set(allSales.map(v => v.vendedor || "SEM VENDEDOR"))]).sort();
+    const vendedoresDisp = [...new Set([...filtrarVendedoresAtivos([...new Set(allSales.map(v => v.vendedor || "SEM VENDEDOR"))]), ...Object.values(carteira).map(x => x.vendedor)])].sort();
     const clienteMap = {};
     allSales.forEach(v => {
       const id = v.clienteId;
@@ -9553,11 +9860,12 @@ function CRMPeteca() {
       const dias = diasSemCompra(c.ultimaCompra);
       const status = dias <= 15 ? "ativo" : dias <= 30 ? "recente" : dias <= 60 ? "atencao" : dias <= 90 ? "risco" : "abandonado";
       const vendOrd = Object.entries(c.vendedoresHist).sort(([, a], [, b]) => b - a);
-      const vendedorPrincipal = vendOrd[0]?.[0] || "—";
+      const donoCart = c.membros.map(m => (carteira[String(m)] || {}).vendedor).find(Boolean);
+      const vendedorPrincipal = donoCart || vendOrd[0]?.[0] || "—";
       const ticketMedio = c.vendas > 0 ? c.total / c.vendas : 0;
       const mesesAtivos = c.primeiraCompra && c.ultimaCompra ? Math.max(1, Math.ceil((new Date(c.ultimaCompra) - new Date(c.primeiraCompra)) / (86400000 * 30))) : 1;
-      const freqMensal = c.vendas / mesesAtivos;
-      const mesesParado = Math.floor(dias / 30);
+      const freqMensal = c.vendas / Math.max(mesesAtivos, 6);
+      const mesesParado = Math.min(12, Math.floor(dias / 30));
       const potencialPerdido = ticketMedio * freqMensal * mesesParado;
       return {
         ...c,
@@ -9704,7 +10012,8 @@ function CRMPeteca() {
         color: "#ef4444"
       }
     }, "R$ ", totalPotencialPerdido.toLocaleString('pt-BR', {
-      minimumFractionDigits: 2
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
     })), React.createElement("div", {
       style: {
         marginTop: 8,
@@ -9715,39 +10024,42 @@ function CRMPeteca() {
     }, React.createElement("button", {
       onClick: () => {
         const rows = clientesArr.map((c, i) => `<tr><td>${i + 1}</td><td>${c.nome}${c.isIde ? ' 🔗' : ''}</td><td>${c.cidade}</td><td>${c.vendedorPrincipal}</td><td>${c.vendas}</td><td>R$ ${c.total.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         })}</td><td>${c.diasSemCompra}d</td><td>${c.status}</td><td>R$ ${c.potencialPerdido.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         })}</td></tr>`).join('');
         printContent(`Abandono & Recuperação (${clientesArr.length})`, `
                           <div class="kpi-row"><div class="kpi"><div class="kpi-label">Potencial Perdido</div><div class="kpi-value" style="color:#c00">R$ ${totalPotencialPerdido.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         })}</div></div></div>
                           <table><thead><tr><th>#</th><th>Cliente</th><th>Cidade</th><th>Vendedor</th><th>Vendas</th><th>Total</th><th>Dias</th><th>Status</th><th>Potencial</th></tr></thead><tbody>${rows}</tbody></table>`);
       },
       style: {
-        padding: "5px 10px",
+        padding: "0 16px",
         background: "var(--md-s5)",
         border: "1px solid var(--md-ol)",
-        borderRadius: 5,
-        color: "var(--md-onv)",
-        fontSize: 9,
+        color: "var(--md-on)",
+        fontSize: 12,
+        fontWeight: 600,
         cursor: "pointer"
       }
-    }, "\uD83D\uDDA8"), React.createElement("button", {
+    }, "\uD83D\uDDA8 Imprimir"), React.createElement("button", {
       onClick: () => {
         exportCSV('abandono.csv', ['#', 'Cliente', 'IDE', 'Cidade', 'Vendedor', 'Vendas', 'Total', 'Dias sem Compra', 'Status', 'Potencial Perdido'], clientesArr.map((c, i) => [i + 1, c.nome, c.code || '', c.cidade, c.vendedorPrincipal, c.vendas, c.total.toFixed(2), c.diasSemCompra, c.status, c.potencialPerdido.toFixed(2)]));
       },
       style: {
-        padding: "5px 10px",
+        padding: "0 16px",
         background: "var(--md-s5)",
         border: "1px solid var(--md-ol)",
-        borderRadius: 5,
-        color: "var(--md-onv)",
-        fontSize: 9,
+        color: "var(--md-on)",
+        fontSize: 12,
+        fontWeight: 600,
         cursor: "pointer"
       }
-    }, "\uD83D\uDCCA"))))), React.createElement("div", {
+    }, "\uD83D\uDCCA Exportar CSV"))))), React.createElement("div", {
       style: {
         background: "var(--md-s3)",
         border: "1px solid var(--md-ov)",
@@ -10020,7 +10332,8 @@ function CRMPeteca() {
         color: "#22c55e"
       }
     }, "R$ ", r.valor.toLocaleString('pt-BR', {
-      minimumFractionDigits: 2
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
     })), React.createElement("div", {
       style: {
         fontSize: 10,
@@ -11290,7 +11603,8 @@ function CRMPeteca() {
         color: "#22c55e"
       }
     }, "R$ ", fatMes.toLocaleString('pt-BR', {
-      minimumFractionDigits: 2
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
     }))), React.createElement("div", {
       style: {
         background: "var(--md-s3)",
@@ -11452,18 +11766,22 @@ function CRMPeteca() {
           const meta = metasVendedores[vd] || 0;
           const pct = meta > 0 ? (real / meta * 100).toFixed(1) + '%' : '—';
           return `<tr><td>${vd}</td><td>R$ ${real.toLocaleString('pt-BR', {
-            minimumFractionDigits: 2
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
           })}</td><td>${meta > 0 ? 'R$ ' + meta.toLocaleString('pt-BR', {
-            minimumFractionDigits: 2
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
           }) : '—'}</td><td>${pct}</td><td>${vendedorMes[vd]?.vendas || 0}</td><td>${vendedorMes[vd]?.clientes.size || 0}</td></tr>`;
         }).join('');
         printContent(`Metas & Desempenho — ${mesLabel}`, `
                       <div class="kpi-row">
                         <div class="kpi"><div class="kpi-label">Faturamento Real</div><div class="kpi-value">R$ ${fatMes.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         })}</div></div>
                         <div class="kpi"><div class="kpi-label">Meta Geral</div><div class="kpi-value">${metaGeral > 0 ? 'R$ ' + metaGeral.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         }) : 'Não definida'}</div></div>
                         <div class="kpi"><div class="kpi-label">Atingimento</div><div class="kpi-value">${metaGeral > 0 ? pctGeral.toFixed(1) + '%' : '—'}</div></div>
                       </div>
@@ -11709,7 +12027,8 @@ function CRMPeteca() {
       return React.createElement("div", {
         key: m,
         title: `${m.slice(5)}/${m.slice(0, 4)}: R$ ${real.toLocaleString('pt-BR', {
-          minimumFractionDigits: 2
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2
         })}${meta > 0 ? ` | Meta: R$ ${meta.toLocaleString('pt-BR')} (${(real / meta * 100).toFixed(0)}%)` : ''}`,
         style: {
           flex: 1,
@@ -11812,7 +12131,42 @@ function CRMPeteca() {
         borderRadius: 2
       }
     }), React.createElement("span", null, "M\xEAs selecionado")))));
-  })(), tab === "kanbans" && (() => {
+  })(), tab === "cadastros" && React.createElement(CadastrosTab, {
+    clientes: clientes,
+    getClientData: getClientData,
+    mods: mods,
+    saveMods: saveMods,
+    vendas: vendas,
+    aliasClientes: aliasClientes,
+    resolveAlias: resolveAlias,
+    naoDup: naoDup,
+    salvarNaoDup: salvarNaoDup,
+    mesclarGrupos: mesclarGrupos,
+    mesclagens: mesclagens,
+    desfazerMesclagem: desfazerMesclagem,
+    carteira: carteira,
+    criarSnapshot: criarSnapshot,
+    showToast: showToast
+  }), tab === "carteira" && React.createElement(CarteiraTab, {
+    clientes: clientes,
+    getClientData: getClientData,
+    vendas: vendas,
+    aliasClientes: aliasClientes,
+    resolveAlias: resolveAlias,
+    carteira: carteira,
+    carteiraOk: carteiraOk,
+    vendedoresAtivos: vendedoresAtivos,
+    transferirClientes: transferirClientes,
+    carteiraConflOk: carteiraConflOk,
+    salvarCarteiraConflOk: salvarCarteiraConflOk,
+    abrirClientes: d => {
+      setTab('clientes');
+      setCarteiraFiltro(d);
+      setStatusFiltro('TODOS');
+      setPage(0);
+    },
+    showToast: showToast
+  }), tab === "kanbans" && (() => {
     const ativos = kanbans.filter(k => String(k.finalizado).toLowerCase() !== 'sim');
     const statsGeral = {
       total: ativos.length,
@@ -12222,7 +12576,8 @@ function CRMPeteca() {
         marginTop: 2
       }
     }, v.total, " clientes \u2022 R$ ", v.potencial.toLocaleString('pt-BR', {
-      minimumFractionDigits: 2
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
     }), " em jogo")), React.createElement("div", {
       style: {
         display: "flex",
@@ -12823,6 +13178,41 @@ function CRMPeteca() {
     value: i
   }, i))))), React.createElement("div", {
     style: {
+      flex: "0 1 160px"
+    }
+  }, React.createElement("label", {
+    style: {
+      fontSize: 11,
+      color: "var(--md-mut)",
+      display: "block",
+      marginBottom: 4,
+      textTransform: "uppercase",
+      letterSpacing: 1
+    }
+  }, "Carteira"), React.createElement("select", {
+    value: carteiraFiltro,
+    onChange: e => {
+      setCarteiraFiltro(e.target.value);
+      setPage(0);
+    },
+    style: {
+      width: "100%",
+      padding: "10px 14px",
+      background: "var(--md-s1)",
+      border: "1px solid var(--md-ov)",
+      borderRadius: 12,
+      color: "var(--md-on)",
+      fontSize: 13
+    }
+  }, React.createElement("option", {
+    value: "TODAS"
+  }, "Todas"), [...vendedoresAtivos, 'EMPRESA'].map(v => React.createElement("option", {
+    key: v,
+    value: v
+  }, v)), React.createElement("option", {
+    value: "SEM"
+  }, "Sem dono"))), React.createElement("div", {
+    style: {
       flex: "0 1 150px"
     }
   }, React.createElement("label", {
@@ -13022,7 +13412,7 @@ function CRMPeteca() {
       });
       return n;
     })
-  })), ["ID", "Nome", "Cidade", "Bairro", "IDE", statusFiltro === "PENDENTES" ? "Faturamento" : "", "Status", "Ações"].filter(Boolean).map(h => React.createElement("th", {
+  })), ["ID", "Nome", "Cidade", "Carteira", "IDE", statusFiltro === "PENDENTES" ? "Faturamento" : "", "Status", "Ações"].filter(Boolean).map(h => React.createElement("th", {
     key: h,
     style: {
       padding: "12px 16px",
@@ -13113,9 +13503,15 @@ function CRMPeteca() {
       style: {
         padding: "10px 16px",
         fontSize: 12,
-        color: "var(--md-mut)"
+        color: (carteira[String(c.i)] || {}).vendedor === 'EMPRESA' ? "#fcd34d" : "var(--md-onv)",
+        fontWeight: 600
       }
-    }, c.b), React.createElement("td", {
+    }, (carteira[String(c.i)] || {}).vendedor || React.createElement("span", {
+      style: {
+        color: "var(--md-mut2)",
+        fontWeight: 400
+      }
+    }, "\u2014")), React.createElement("td", {
       style: {
         padding: "10px 16px"
       }
@@ -13147,7 +13543,8 @@ function CRMPeteca() {
         color: fatCli > 0 ? "#22c55e" : "#ef4444"
       }
     }, fatCli > 0 ? `R$ ${fatCli.toLocaleString('pt-BR', {
-      minimumFractionDigits: 2
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
     })}` : "R$ 0,00 ⚠"), React.createElement("td", {
       style: {
         padding: "10px 16px"
@@ -13268,7 +13665,50 @@ function CRMPeteca() {
       color: "var(--md-onv)",
       padding: "0 12px"
     }
-  }, "\u23F3 Processando...") : loteIde !== null ? React.createElement(React.Fragment, null, React.createElement("input", {
+  }, "\u23F3 Processando...") : loteTransf !== null ? React.createElement(React.Fragment, null, React.createElement("select", {
+    value: loteTransf,
+    onChange: e => setLoteTransf(e.target.value),
+    style: {
+      padding: "0 14px",
+      background: "var(--md-s2)",
+      border: "1px solid var(--md-ol)",
+      color: "var(--md-on)"
+    }
+  }, React.createElement("option", {
+    value: ""
+  }, "Transferir para..."), [...vendedoresAtivos, 'EMPRESA'].map(v => React.createElement("option", {
+    key: v,
+    value: v
+  }, v))), React.createElement("button", {
+    disabled: !loteTransf,
+    onClick: async () => {
+      setLoteRodando(true);
+      try {
+        await transferirClientes(selIds, loteTransf, 'Transferência em lote');
+        limparSelecao();
+        setLoteTransf(null);
+      } finally {
+        setLoteRodando(false);
+      }
+    },
+    style: {
+      padding: "0 18px",
+      background: "var(--md-pc)",
+      border: "none",
+      color: "var(--md-onpc)",
+      fontSize: 12,
+      fontWeight: 600
+    }
+  }, "Aplicar"), React.createElement("button", {
+    onClick: () => setLoteTransf(null),
+    style: {
+      padding: "0 14px",
+      background: "transparent",
+      border: "1px solid var(--md-ol)",
+      color: "var(--md-onv)",
+      fontSize: 12
+    }
+  }, "Voltar")) : loteIde !== null ? React.createElement(React.Fragment, null, React.createElement("input", {
     autoFocus: true,
     list: "lista-ides",
     value: loteIde,
@@ -13356,6 +13796,16 @@ function CRMPeteca() {
       fontWeight: 600
     }
   }, "\u2705 Reativar"), React.createElement("button", {
+    onClick: () => setLoteTransf(''),
+    style: {
+      padding: "0 16px",
+      background: "var(--md-pc)",
+      border: "none",
+      color: "var(--md-onpc)",
+      fontSize: 12,
+      fontWeight: 600
+    }
+  }, "\uD83D\uDC64 Transferir"), React.createElement("button", {
     onClick: () => setLoteIde(''),
     style: {
       padding: "0 16px",
@@ -13584,7 +14034,8 @@ function CRMPeteca() {
   }, {
     label: "Faturamento Total",
     value: "R$ " + vendasStats.totalValor.toLocaleString('pt-BR', {
-      minimumFractionDigits: 2
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
     }),
     icon: "💰",
     color: "#f59e0b"
@@ -13694,7 +14145,8 @@ function CRMPeteca() {
         color: "#22c55e"
       }
     }, "R$ ", valor.toLocaleString('pt-BR', {
-      minimumFractionDigits: 2
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
     })), mesRemover === m && React.createElement("div", {
       style: {
         display: "flex",
@@ -13998,7 +14450,8 @@ function CRMPeteca() {
       textAlign: "right"
     }
   }, v.valorLiquido.toLocaleString('pt-BR', {
-    minimumFractionDigits: 2
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
   })), React.createElement("td", {
     style: {
       padding: "8px 12px",
@@ -14151,7 +14604,8 @@ function CRMPeteca() {
         marginTop: 4
       }
     }, "R$ ", fatCliente.toLocaleString('pt-BR', {
-      minimumFractionDigits: 2
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
     }))), React.createElement("div", {
       style: {
         background: "var(--md-s1)",
@@ -14347,6 +14801,33 @@ function CRMPeteca() {
         color: "var(--md-on)",
         fontSize: 13
       }
+    })), React.createElement("div", {
+      style: {
+        gridColumn: "1 / -1"
+      }
+    }, React.createElement("label", {
+      style: {
+        fontSize: 10,
+        color: "var(--md-mut)",
+        display: "block",
+        marginBottom: 3
+      }
+    }, "TELEFONE ", selectedClient.cep ? `• CEP ${selectedClient.cep}` : ''), React.createElement("input", {
+      value: selectedClient.t || "",
+      onChange: e => setSelectedClient({
+        ...selectedClient,
+        t: e.target.value
+      }),
+      placeholder: "(17) 99999-9999",
+      style: {
+        width: "100%",
+        padding: "8px 10px",
+        background: "var(--md-s3)",
+        border: "1px solid var(--md-ov)",
+        borderRadius: 8,
+        color: "var(--md-on)",
+        fontSize: 13
+      }
     }))), React.createElement("button", {
       onClick: () => {
         const newMods = {
@@ -14358,6 +14839,7 @@ function CRMPeteca() {
         newMods[selectedClient.i].b = selectedClient.b;
         newMods[selectedClient.i].r = selectedClient.r;
         newMods[selectedClient.i].nu = selectedClient.nu;
+        newMods[selectedClient.i].t = selectedClient.t || '';
         saveMods(newMods);
         showToast(`✅ Dados de "${selectedClient.n}" atualizados!`);
       },
@@ -14373,7 +14855,12 @@ function CRMPeteca() {
         cursor: "pointer",
         width: "100%"
       }
-    }, "\uD83D\uDCBE Salvar Altera\xE7\xF5es")), React.createElement("div", {
+    }, "\uD83D\uDCBE Salvar Altera\xE7\xF5es")), React.createElement(CarteiraCliente, {
+      clienteId: String(selectedClient.i),
+      carteira: carteira,
+      vendedoresAtivos: vendedoresAtivos,
+      transferirClientes: transferirClientes
+    }), React.createElement("div", {
       style: {
         background: "var(--md-s1)",
         borderRadius: 14,
@@ -14505,7 +14992,8 @@ function CRMPeteca() {
     const anotCount = (anotacoes[cli.i] || []).length;
     const kanbansAtivos = kanbans.filter(k => String(k.cliente_id) === String(cli.i) && String(k.finalizado).toLowerCase() !== 'sim');
     const fmt = n => 'R$ ' + Number(n || 0).toLocaleString('pt-BR', {
-      minimumFractionDigits: 2
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
     });
     return React.createElement("div", {
       onClick: () => setShowDeleteModal(null),
@@ -17987,7 +18475,8 @@ function EnviarKanbanModal({
       color: "var(--md-onv)"
     }
   }, "\uD83D\uDCCD ", cliente.cidade || '—', " \u2022 ", vendasCount, " compras \u2022 R$ ", fatHist.toLocaleString('pt-BR', {
-    minimumFractionDigits: 2
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
   }))), React.createElement("div", {
     style: {
       padding: 22
@@ -18068,7 +18557,8 @@ function EnviarKanbanModal({
       lineHeight: 1.5
     }
   }, "\uD83D\uDCA1 O vendedor ver\xE1 esse cliente como bolinha no portal dele. O tamanho ser\xE1 proporcional ao potencial perdido (", potPerdido > 0 ? '≈ R$ ' + potPerdido.toLocaleString('pt-BR', {
-    minimumFractionDigits: 2
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
   }) : 'bolinha pequena - sem histórico', ")."), React.createElement("div", {
     style: {
       display: "flex",
@@ -18735,7 +19225,8 @@ function AnalisarNovosClientesModal({
   const totalDecidido = Object.keys(decisoes).length;
   const todosDecididos = totalDecidido === novos.length;
   const fmt = n => 'R$ ' + Number(n || 0).toLocaleString('pt-BR', {
-    minimumFractionDigits: 2
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
   });
   const confirmar = () => {
     const arr = novos.map(n => ({
@@ -19695,7 +20186,8 @@ function SugestaoLinha({
   onIgnorar
 }) {
   const fmt = n => 'R$ ' + Number(n || 0).toLocaleString('pt-BR', {
-    minimumFractionDigits: 2
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
   });
   const corScore = s.score === 100 ? '#22c55e' : s.score >= 90 ? '#84cc16' : s.score >= 80 ? '#eab308' : '#fb923c';
   return React.createElement("div", {
@@ -20400,6 +20892,1689 @@ function GerenciarVendedoresModal({
       boxShadow: '0 2px 8px rgba(34,197,94,0.3)'
     }
   }, "\uD83D\uDD17 Abrir usu\xE1rios no Supabase"))))));
+}
+const cadNorm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+const CAD_SOCIETARIO = /\b(LTDA|ME|EPP|EIRELI|MEI|S A|SA|CIA|E|DE|DA|DO|DAS|DOS|EM|COM|COMERCIO|COMERCIAL|IND|INDUSTRIA|SERV|SERVICOS|EMPREENDIMENTOS?)\b/g;
+const CAD_GENERICOS = /\b(COMUNICACAO|COMUNICACA|COMUNICACOES|VISUAL|VISUAIS|GRAFICA|GRAF|BRINDES|ADESIVOS?|PUBLICIDADE|PROPAGANDA|TOLDOS?|IMPRESSAO|IMPRESSOES|DIGITAL|DESIGN|DESIGNER|ARTES?|ARTS|PAINEIS|LETREIROS?|SINALIZACAO|PLACAS|LUMINOSOS|ENVELOPAMENTO|SOLUCOES|STUDIO|PRINT|MARKETING|EDITORA|COPIADORA|FOTO|LETRAS)\b/g;
+const cadNomeBase = (s, cidade) => {
+  let t = ' ' + cadNorm(s).replace(/\d+/g, ' ') + ' ';
+  t = t.replace(CAD_SOCIETARIO, ' ');
+  cadNorm(cidade).split(' ').filter(w => w.length >= 4).forEach(w => {
+    t = t.replace(new RegExp('\\b' + w + '\\b', 'g'), ' ');
+  });
+  return t.replace(/\s+/g, ' ').trim();
+};
+const cadNucleo = (s, cidade) => cadNomeBase(s, cidade).replace(CAD_GENERICOS, ' ').replace(/\s+/g, ' ').trim();
+const cadDoc = s => {
+  const m = String(s || '').match(/\d[\d.\-\/]{6,}\d/g) || [];
+  for (const x of m) {
+    const d = x.replace(/\D/g, '');
+    if (d.length >= 8) return d;
+  }
+  return '';
+};
+const cadTel = t => {
+  const d = String(t || '').replace(/\D/g, '');
+  return d.length >= 8 ? d.slice(-8) : '';
+};
+const cadSim = (a, b) => {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  const m = a.length,
+    n = b.length;
+  let p = Array.from({
+    length: n + 1
+  }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const q = [i];
+    for (let j = 1; j <= n; j++) q[j] = Math.min(p[j] + 1, q[j - 1] + 1, p[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    p = q;
+  }
+  return 1 - p[n] / Math.max(m, n);
+};
+const cadNomeLimpo = nc => {
+  const s = String(nc || '').split(/\s{2,}/)[0].trim();
+  return /EMISS[AÃ]O|P[AÁ]GINA/i.test(s) || s.length < 2 ? '' : s;
+};
+const cadParKey = (a, b) => {
+  const x = String(a),
+    y = String(b);
+  return x < y ? x + '|' + y : y + '|' + x;
+};
+const fmtD = d => d ? d.slice(8, 10) + '/' + d.slice(5, 7) + '/' + d.slice(0, 4) : '—';
+function cadStatsVendas(vendas, resolveAlias) {
+  const st = {};
+  Object.values(vendas).forEach(arr => (arr || []).forEach(v => {
+    if (!v.clienteId) return;
+    const orig = String(v.clienteId),
+      id = String(resolveAlias(v.clienteId));
+    const s = st[id] = st[id] || {
+      nv: 0,
+      total: 0,
+      ult: '',
+      nomeRec: '',
+      vendUlt: '',
+      porOrig: {}
+    };
+    s.nv++;
+    s.total += v.valorLiquido || 0;
+    if ((v.data || '') > s.ult) {
+      s.ult = v.data || '';
+      s.vendUlt = String(v.vendedor || '').toUpperCase().trim();
+      const nl = cadNomeLimpo(v.nomeCliente);
+      if (nl) s.nomeRec = nl;
+    }
+    const o = s.porOrig[orig] = s.porOrig[orig] || {
+      nv: 0,
+      ult: '',
+      nome: ''
+    };
+    o.nv++;
+    if ((v.data || '') > o.ult) {
+      o.ult = v.data || '';
+      const nl = cadNomeLimpo(v.nomeCliente);
+      if (nl) o.nome = nl;
+    }
+  }));
+  return st;
+}
+function cadDetectar(lista, naoDup) {
+  const byId = {};
+  lista.forEach(c => byId[c.id] = c);
+  const pares = {};
+  const add = (a, b, pts, motivo) => {
+    if (a === b) return;
+    const k = cadParKey(a, b);
+    if (naoDup[k]) return;
+    const p = pares[k] = pares[k] || {
+      a,
+      b,
+      pts: 0,
+      motivos: []
+    };
+    if (!p.motivos.includes(motivo)) {
+      p.motivos.push(motivo);
+      p.pts += pts;
+    }
+  };
+  const bucket = (fn, pts, motivo, maxTam) => {
+    const g = {};
+    lista.forEach(c => {
+      const k = fn(c);
+      if (k) (g[k] = g[k] || []).push(c.id);
+    });
+    Object.values(g).forEach(ids => {
+      if (ids.length < 2 || maxTam && ids.length > maxTam) return;
+      for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) add(ids[i], ids[j], pts, motivo);
+    });
+  };
+  bucket(c => c.doc, 100, 'CPF/CNPJ igual');
+  bucket(c => c.tel, 70, 'Mesmo telefone', 3);
+  const porNome = (fn, pts, motivo) => {
+    const g = {};
+    lista.forEach(c => {
+      const k = fn(c);
+      if (k && k.length >= 3) (g[k] = g[k] || []).push(c);
+    });
+    Object.values(g).forEach(cs => {
+      if (cs.length < 2 || cs.length > 12) return;
+      for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) {
+        const A = cs[i],
+          B = cs[j];
+        if (motivo === 'Nome quase igual' && A.base === B.base) continue;
+        if (A.cidN === B.cidN || !A.cidN || !B.cidN) add(A.id, B.id, pts, motivo);
+      }
+    });
+  };
+  porNome(c => c.base, 70, 'Mesmo nome');
+  porNome(c => c.nucleo, 40, 'Nome quase igual');
+  bucket(c => c.endK, 40, 'Mesmo endereço');
+  bucket(c => c.ide, 50, 'Mesmo grupo IDE');
+  const porCid = {};
+  lista.forEach(c => (porCid[c.cidN] = porCid[c.cidN] || []).push(c));
+  Object.values(porCid).forEach(cs => {
+    for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) {
+      const A = cs[i],
+        B = cs[j];
+      if (A.nucleo.length < 5 || B.nucleo.length < 5 || A.base === B.base) continue;
+      if (Math.abs(A.nucleo.length - B.nucleo.length) > 6) continue;
+      const s = cadSim(A.nucleo, B.nucleo);
+      if (s >= 0.88) add(A.id, B.id, 35, `Nome parecido (${Math.round(s * 100)}%)`);
+    }
+  });
+  const validos = Object.values(pares).map(p => {
+    const A = byId[p.a],
+      B = byId[p.b];
+    let pts = p.pts;
+    if (A.cidN && B.cidN && A.cidN !== B.cidN && !p.motivos.includes('CPF/CNPJ igual')) {
+      pts -= 30;
+      p.motivos.push('Cidades diferentes');
+    }
+    if (!A.cidN || !B.cidN) p.motivos.push('Cadastro pendente');
+    return {
+      ...p,
+      score: Math.max(0, Math.min(100, pts))
+    };
+  }).filter(p => p.score >= 50);
+  const qtdBase = {};
+  lista.forEach(c => {
+    if (c.base) qtdBase[c.base] = (qtdBase[c.base] || 0) + 1;
+  });
+  validos.forEach(p => {
+    const temNome = p.motivos.includes('Mesmo nome') || p.motivos.includes('Nome quase igual');
+    const pendUnico = p.motivos.includes('Mesmo nome') && p.motivos.includes('Cadastro pendente') && qtdBase[byId[p.a].base] === 2;
+    p.forte = p.motivos.includes('CPF/CNPJ igual') || temNome && p.score >= 100 || pendUnico;
+  });
+  const agrupar = pares => {
+    const pai = {};
+    const f = x => pai[x] === undefined || pai[x] === x ? pai[x] = x : pai[x] = f(pai[x]);
+    pares.forEach(p => {
+      pai[f(p.a)] = f(p.b);
+    });
+    const g = {};
+    pares.forEach(p => {
+      const r = f(p.a);
+      const x = g[r] = g[r] || {
+        ids: new Set(),
+        score: 0,
+        motivos: new Set(),
+        pares: []
+      };
+      x.ids.add(p.a);
+      x.ids.add(p.b);
+      x.score = Math.max(x.score, p.score);
+      p.motivos.forEach(m => x.motivos.add(m));
+      x.pares.push(p);
+    });
+    return Object.values(g);
+  };
+  const montar = (g, certeza) => {
+    const membros = [...g.ids].map(id => byId[id]).sort((x, y) => (y.ult || '').localeCompare(x.ult || '') || Number(y.id) - Number(x.id));
+    return {
+      key: membros.map(m => m.id).sort().join('-'),
+      membros,
+      score: g.score,
+      motivos: [...g.motivos],
+      pares: g.pares,
+      certeza
+    };
+  };
+  const certos = agrupar(validos.filter(p => p.forte)).filter(g => g.ids.size <= 8);
+  const emCerteza = new Set();
+  certos.forEach(g => g.ids.forEach(id => emCerteza.add(id)));
+  const revis = agrupar(validos.filter(p => !emCerteza.has(p.a) && !emCerteza.has(p.b)));
+  return [...certos.map(g => montar(g, true)), ...revis.map(g => montar(g, false))].sort((a, b) => b.score - a.score || b.membros.length - a.membros.length);
+}
+function CadastrosTab(props) {
+  const [sub, setSub] = useState('duplicados');
+  const tabs = [['duplicados', '🧬 Duplicados'], ['erp', '⬇ Atualizar pelo ERP'], ['mesclagens', '↩ Mesclagens feitas (' + (props.mesclagens || []).length + ')']];
+  return React.createElement("div", {
+    style: {
+      animation: 'fadeIn .3s ease'
+    }
+  }, React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 8,
+      marginBottom: 18,
+      flexWrap: 'wrap'
+    }
+  }, tabs.map(([k, l]) => React.createElement("button", {
+    key: k,
+    onClick: () => setSub(k),
+    style: {
+      padding: '0 20px',
+      background: sub === k ? 'var(--md-pc)' : 'transparent',
+      border: sub === k ? 'none' : '1px solid var(--md-ol)',
+      color: sub === k ? 'var(--md-onpc)' : 'var(--md-onv)',
+      fontSize: 13,
+      fontWeight: 600
+    }
+  }, l))), sub === 'duplicados' && React.createElement(CentralDuplicados, props), sub === 'erp' && React.createElement(AtualizarPeloERP, props), sub === 'mesclagens' && React.createElement(MesclagensFeitas, props));
+}
+function CentralDuplicados({
+  clientes,
+  getClientData,
+  mods,
+  vendas,
+  aliasClientes,
+  resolveAlias,
+  naoDup,
+  salvarNaoDup,
+  mesclarGrupos,
+  carteira,
+  showToast
+}) {
+  const [idx, setIdx] = useState(0);
+  const [principalSel, setPrincipalSel] = useState({});
+  const [loteSel, setLoteSel] = useState(null);
+  const [rodando, setRodando] = useState(false);
+  const stats = useMemo(() => cadStatsVendas(vendas, resolveAlias), [vendas, resolveAlias]);
+  const lista = useMemo(() => clientes.filter(c => !aliasClientes[String(c.i)]).map(c => getClientData(c)).filter(c => c.a !== 0).map(c => {
+    const m = mods[c.i] || {};
+    const s = stats[String(c.i)] || {};
+    const cid = c.c === 'CADASTRO PENDENTE' ? '' : c.c;
+    return {
+      id: String(c.i),
+      n: c.n,
+      c: c.c,
+      cidN: cadNorm(cid),
+      r: c.r,
+      nu: c.nu,
+      b: c.b,
+      t: m.t || '',
+      d: c.d || '',
+      doc: cadDoc(c.n),
+      tel: cadTel(m.t),
+      base: cadNomeBase(c.n, cid),
+      nucleo: cadNucleo(c.n, cid),
+      endK: c.r && c.nu && String(c.nu).replace(/\D/g, '') && cid ? cadNorm(c.r).replace(/\b(R|RUA|AV|AVENIDA|AL|ALAMEDA|TV|TRAV)\b/g, '').trim() + '|' + String(c.nu).replace(/\D/g, '') + '|' + cadNorm(cid) : '',
+      ide: c.d || '',
+      nv: s.nv || 0,
+      total: s.total || 0,
+      ult: s.ult || '',
+      nomeRec: s.nomeRec || '',
+      dono: (carteira[String(c.i)] || {}).vendedor || ''
+    };
+  }), [clientes, getClientData, mods, stats, aliasClientes, carteira]);
+  const grupos = useMemo(() => cadDetectar(lista, naoDup), [lista, naoDup]);
+  const certeza = grupos.filter(g => g.certeza);
+  const revisar = grupos.filter(g => !g.certeza);
+  const atual = revisar[Math.min(idx, Math.max(0, revisar.length - 1))];
+  const [fora, setFora] = useState({});
+  const incluidos = g => g.membros.filter(m => !(fora[g.key] || {})[m.id]);
+  const principalDe = g => {
+    const inc = incluidos(g);
+    const p = principalSel[g.key];
+    return p && inc.some(m => m.id === p) ? p : (inc[0] || g.membros[0]).id;
+  };
+  const nomeFinalDe = (g, pid) => {
+    const p = g.membros.find(m => m.id === pid) || g.membros[0];
+    const maisRecente = [...g.membros].sort((x, y) => (y.ult || '').localeCompare(x.ult || ''))[0];
+    return maisRecente && maisRecente.nomeRec || p.n;
+  };
+  const mesclar = async gs => {
+    setRodando(true);
+    try {
+      const nd = {
+        ...naoDup
+      };
+      let mudouNd = false;
+      gs.forEach(g => {
+        const tirados = g.membros.filter(m => (fora[g.key] || {})[m.id]);
+        const inc = incluidos(g);
+        tirados.forEach(t => inc.forEach(i => {
+          nd[cadParKey(t.id, i.id)] = 1;
+          mudouNd = true;
+        }));
+      });
+      if (mudouNd) await salvarNaoDup(nd);
+      const validosG = gs.filter(g => incluidos(g).length >= 2);
+      if (validosG.length) await mesclarGrupos(validosG.map(g => {
+        const pid = principalDe(g);
+        const inc = incluidos(g);
+        return {
+          principal: pid,
+          membros: inc.map(m => m.id),
+          nomeFinal: nomeFinalDe({
+            ...g,
+            membros: inc
+          }, pid),
+          motivos: g.motivos
+        };
+      }));
+    } finally {
+      setRodando(false);
+    }
+  };
+  const naoSao = async g => {
+    const n = {
+      ...naoDup
+    };
+    g.membros.forEach((a, i) => g.membros.slice(i + 1).forEach(b => {
+      n[cadParKey(a.id, b.id)] = 1;
+    }));
+    await salvarNaoDup(n);
+    showToast('✓ Marcado como cadastros diferentes — não vai aparecer de novo');
+  };
+  useEffect(() => {
+    const h = e => {
+      if (!atual || rodando || ['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName || '')) return;
+      const k = e.key.toLowerCase();
+      if (k === 'm') {
+        e.preventDefault();
+        mesclar([atual]);
+      } else if (k === 'n') {
+        e.preventDefault();
+        naoSao(atual);
+      } else if (k === 'arrowright') {
+        e.preventDefault();
+        setIdx(i => Math.min(i + 1, revisar.length - 1));
+      } else if (k === 'arrowleft') {
+        e.preventDefault();
+        setIdx(i => Math.max(0, i - 1));
+      }
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  });
+  const card = {
+    background: 'var(--md-s3)',
+    border: '1px solid var(--md-ov)',
+    borderRadius: 24,
+    padding: 20,
+    marginBottom: 16
+  };
+  const chip = (txt, cor) => React.createElement("span", {
+    key: txt,
+    style: {
+      padding: '3px 10px',
+      borderRadius: 999,
+      fontSize: 11,
+      fontWeight: 600,
+      background: `color-mix(in srgb,${cor} 16%,transparent)`,
+      color: cor,
+      border: `1px solid color-mix(in srgb,${cor} 35%,transparent)`
+    }
+  }, txt);
+  const corMotivo = m => m.startsWith('CPF') || m.startsWith('Mesmo telefone') || m === 'Mesmo nome' ? '#4ade80' : m.startsWith('Cidades') ? '#f87171' : '#fcd34d';
+  return React.createElement("div", null, React.createElement("div", {
+    style: {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))',
+      gap: 12,
+      marginBottom: 16
+    }
+  }, [['Casos de certeza', certeza.length, '#4ade80'], ['Para revisar', revisar.length, '#fcd34d'], ['Clientes analisados', lista.length, 'var(--md-p75)'], ['Marcados como diferentes', Object.keys(naoDup).length, 'var(--md-onv)']].map(([l, v, c]) => React.createElement("div", {
+    key: l,
+    style: {
+      background: 'var(--md-s3)',
+      border: '1px solid var(--md-ov)',
+      borderRadius: 20,
+      padding: '16px 18px'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--md-mut)',
+      textTransform: 'uppercase',
+      letterSpacing: 1
+    }
+  }, l), React.createElement("div", {
+    style: {
+      fontSize: 26,
+      fontWeight: 700,
+      color: c,
+      marginTop: 4
+    }
+  }, v)))), certeza.length > 0 && React.createElement("div", {
+    style: card
+  }, React.createElement("div", {
+    style: {
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      gap: 12,
+      flexWrap: 'wrap'
+    }
+  }, React.createElement("div", null, React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600,
+      color: 'var(--md-on)'
+    }
+  }, "\uD83D\uDFE2 ", certeza.length, " casos de certeza"), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      marginTop: 2
+    }
+  }, "Documento igual, ou telefone/endere\xE7o/grupo + mesmo nome. Fica o cadastro com a compra mais recente e o nome mais recente.")), React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 8
+    }
+  }, React.createElement("button", {
+    onClick: () => setLoteSel(loteSel ? null : Object.fromEntries(certeza.map(g => [g.key, true]))),
+    style: {
+      padding: '0 16px',
+      background: 'transparent',
+      border: '1px solid var(--md-ol)',
+      color: 'var(--md-onv)',
+      fontSize: 12
+    }
+  }, loteSel ? 'Fechar lista' : 'Ver lista'), React.createElement("button", {
+    disabled: rodando,
+    onClick: () => mesclar(certeza.filter(g => !loteSel || loteSel[g.key])),
+    style: {
+      padding: '0 20px',
+      background: 'var(--md-pc)',
+      border: 'none',
+      color: 'var(--md-onpc)',
+      fontSize: 13,
+      fontWeight: 600
+    }
+  }, rodando ? 'Mesclando...' : `Mesclar ${loteSel ? Object.values(loteSel).filter(Boolean).length : certeza.length}`))), loteSel && React.createElement("div", {
+    style: {
+      marginTop: 14,
+      maxHeight: 360,
+      overflowY: 'auto',
+      borderTop: '1px solid var(--md-ov)'
+    }
+  }, certeza.map(g => React.createElement("label", {
+    key: g.key,
+    style: {
+      display: 'flex',
+      gap: 10,
+      alignItems: 'flex-start',
+      padding: '10px 0',
+      borderBottom: '1px solid var(--md-ov)',
+      cursor: 'pointer'
+    }
+  }, React.createElement("input", {
+    type: "checkbox",
+    checked: !!loteSel[g.key],
+    onChange: () => setLoteSel(s => ({
+      ...s,
+      [g.key]: !s[g.key]
+    }))
+  }), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      flex: 1
+    }
+  }, React.createElement("div", {
+    style: {
+      color: 'var(--md-on)',
+      fontWeight: 600
+    }
+  }, "\u2713 ", nomeFinalDe(g, principalDe(g)), " ", React.createElement("span", {
+    style: {
+      color: 'var(--md-mut)',
+      fontWeight: 400
+    }
+  }, "\u2022 fica #", principalDe(g))), React.createElement("div", {
+    style: {
+      color: 'var(--md-mut)',
+      marginTop: 2
+    }
+  }, g.membros.map(m => `#${m.id} ${m.n} (${m.nv}v)`).join('  +  ')), React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 4,
+      marginTop: 4,
+      flexWrap: 'wrap'
+    }
+  }, g.motivos.map(m => chip(m, corMotivo(m))))))))), !atual ? React.createElement("div", {
+    style: {
+      ...card,
+      textAlign: 'center',
+      padding: 40
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 40
+    }
+  }, "\uD83C\uDF89"), React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600,
+      color: 'var(--md-on)',
+      marginTop: 8
+    }
+  }, "Nenhum caso para revisar"), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      marginTop: 4
+    }
+  }, "Sua base est\xE1 sem duplicados prov\xE1veis.")) : React.createElement("div", {
+    style: card
+  }, React.createElement("div", {
+    style: {
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 12,
+      gap: 10,
+      flexWrap: 'wrap'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600,
+      color: 'var(--md-on)'
+    }
+  }, "Revis\xE3o ", Math.min(idx, revisar.length - 1) + 1, " de ", revisar.length, " ", React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      fontWeight: 400
+    }
+  }, "\u2022 semelhan\xE7a ", atual.score, "%")), React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 4,
+      flexWrap: 'wrap'
+    }
+  }, atual.motivos.map(m => chip(m, corMotivo(m))))), React.createElement("div", {
+    style: {
+      height: 4,
+      borderRadius: 4,
+      background: 'var(--md-s5)',
+      marginBottom: 16,
+      overflow: 'hidden'
+    }
+  }, React.createElement("div", {
+    style: {
+      height: '100%',
+      width: `${(Math.min(idx, revisar.length - 1) + 1) / revisar.length * 100}%`,
+      background: 'var(--md-p55)'
+    }
+  })), React.createElement("div", {
+    style: {
+      display: 'grid',
+      gridTemplateColumns: `repeat(${Math.min(atual.membros.length, 4)},minmax(0,1fr))`,
+      gap: 10
+    }
+  }, atual.membros.map(m => {
+    const sel = principalDe(atual) === m.id;
+    const tirado = (fora[atual.key] || {})[m.id];
+    return React.createElement("div", {
+      key: m.id,
+      onClick: () => !tirado && setPrincipalSel(s => ({
+        ...s,
+        [atual.key]: m.id
+      })),
+      style: {
+        cursor: tirado ? 'default' : 'pointer',
+        opacity: tirado ? 0.45 : 1,
+        padding: 14,
+        borderRadius: 18,
+        background: sel ? 'color-mix(in srgb,var(--md-p55) 14%,transparent)' : 'var(--md-s2)',
+        border: sel ? '2px solid var(--md-p55)' : '2px solid transparent'
+      }
+    }, React.createElement("div", {
+      style: {
+        display: 'flex',
+        justifyContent: 'space-between',
+        gap: 6
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 10,
+        fontWeight: 700,
+        color: sel ? 'var(--md-p75)' : 'var(--md-mut)',
+        letterSpacing: 1
+      }
+    }, tirado ? 'FORA DO GRUPO' : sel ? '★ FICA ESTE' : 'clique para manter este'), atual.membros.length > 2 || tirado ? React.createElement("button", {
+      className: "md-icon",
+      onClick: e => {
+        e.stopPropagation();
+        setFora(f => ({
+          ...f,
+          [atual.key]: {
+            ...(f[atual.key] || {}),
+            [m.id]: !tirado
+          }
+        }));
+      },
+      title: tirado ? 'Voltar para o grupo' : 'Não é o mesmo cliente — tirar deste grupo',
+      style: {
+        minHeight: 24,
+        padding: '0 8px',
+        background: 'transparent',
+        border: '1px solid var(--md-ol)',
+        color: 'var(--md-onv)',
+        fontSize: 10
+      }
+    }, tirado ? '↩ voltar' : '✕ tirar') : null), React.createElement("div", {
+      style: {
+        fontSize: 14,
+        fontWeight: 700,
+        color: 'var(--md-on)',
+        marginTop: 4
+      }
+    }, m.n), React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--md-mut)',
+        marginTop: 6,
+        lineHeight: 1.6
+      }
+    }, "#", m.id, " \u2022 ", m.c || '—', React.createElement("br", null), m.r ? `${m.r}, ${m.nu || ''}` : 'sem endereço', m.b ? ' - ' + m.b : '', React.createElement("br", null), "\uD83D\uDCDE ", m.t || '—', React.createElement("br", null), "\uD83E\uDDFE ", m.nv, " vendas \u2022 \xFAlt. ", fmtD(m.ult), React.createElement("br", null), "\uD83D\uDC64 ", m.dono || 'sem dono', m.d ? ' • ' + m.d : ''));
+  })), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-onv)',
+      marginTop: 12
+    }
+  }, "Nome que fica: ", React.createElement("b", {
+    style: {
+      color: 'var(--md-on)'
+    }
+  }, nomeFinalDe({
+    ...atual,
+    membros: incluidos(atual)
+  }, principalDe(atual))), " ", React.createElement("span", {
+    style: {
+      color: 'var(--md-mut)'
+    }
+  }, "(o mais recente usado nas vendas)")), React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 8,
+      marginTop: 16,
+      flexWrap: 'wrap'
+    }
+  }, React.createElement("button", {
+    disabled: rodando,
+    onClick: () => mesclar([atual]),
+    style: {
+      padding: '0 22px',
+      background: 'var(--md-pc)',
+      border: 'none',
+      color: 'var(--md-onpc)',
+      fontSize: 13,
+      fontWeight: 600
+    }
+  }, "\uD83D\uDD17 Mesclar ", React.createElement("kbd", {
+    style: {
+      opacity: .6,
+      marginLeft: 6
+    }
+  }, "M")), React.createElement("button", {
+    onClick: () => naoSao(atual),
+    style: {
+      padding: '0 20px',
+      background: 'transparent',
+      border: '1px solid var(--md-ol)',
+      color: 'var(--md-on)',
+      fontSize: 13
+    }
+  }, "\u270B S\xE3o diferentes ", React.createElement("kbd", {
+    style: {
+      opacity: .6,
+      marginLeft: 6
+    }
+  }, "N")), React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }), React.createElement("button", {
+    onClick: () => setIdx(i => Math.max(0, i - 1)),
+    style: {
+      padding: '0 16px',
+      background: 'transparent',
+      border: '1px solid var(--md-ov)',
+      color: 'var(--md-onv)',
+      fontSize: 13
+    }
+  }, "\u2190"), React.createElement("button", {
+    onClick: () => setIdx(i => Math.min(i + 1, revisar.length - 1)),
+    style: {
+      padding: '0 16px',
+      background: 'transparent',
+      border: '1px solid var(--md-ov)',
+      color: 'var(--md-onv)',
+      fontSize: 13
+    }
+  }, "Pular \u2192"))));
+}
+function MesclagensFeitas({
+  mesclagens,
+  desfazerMesclagem
+}) {
+  const [conf, setConf] = useState(null);
+  const lista = [...(mesclagens || [])].reverse();
+  return React.createElement("div", {
+    style: {
+      background: 'var(--md-s3)',
+      border: '1px solid var(--md-ov)',
+      borderRadius: 24,
+      padding: 20
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600,
+      color: 'var(--md-on)',
+      marginBottom: 4
+    }
+  }, "\u21A9 Mesclagens feitas"), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      marginBottom: 14
+    }
+  }, "Desfazer separa os cadastros de novo: as vendas voltam para o ID original."), !lista.length && React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: 'var(--md-mut)',
+      padding: 20,
+      textAlign: 'center'
+    }
+  }, "Nenhuma mesclagem ainda."), lista.map(m => React.createElement("div", {
+    key: m.id,
+    style: {
+      display: 'flex',
+      gap: 12,
+      alignItems: 'center',
+      padding: '10px 0',
+      borderBottom: '1px solid var(--md-ov)',
+      fontSize: 12
+    }
+  }, React.createElement("div", {
+    style: {
+      flex: 1
+    }
+  }, React.createElement("div", {
+    style: {
+      color: 'var(--md-on)',
+      fontWeight: 600
+    }
+  }, "#", m.principal, " ", m.nomeFinal), React.createElement("div", {
+    style: {
+      color: 'var(--md-mut)',
+      marginTop: 2
+    }
+  }, "absorveu ", m.outros.map(o => '#' + o).join(', '), " \u2022 ", new Date(m.em).toLocaleString('pt-BR'), " \u2022 ", m.por)), conf === m.id ? React.createElement(React.Fragment, null, React.createElement("button", {
+    onClick: () => setConf(null),
+    style: {
+      padding: '0 14px',
+      minHeight: 34,
+      background: 'transparent',
+      border: '1px solid var(--md-ol)',
+      color: 'var(--md-onv)',
+      fontSize: 11
+    }
+  }, "N\xE3o"), React.createElement("button", {
+    onClick: () => {
+      setConf(null);
+      desfazerMesclagem(m.id);
+    },
+    style: {
+      padding: '0 14px',
+      minHeight: 34,
+      background: '#dc2626',
+      border: 'none',
+      color: '#fff',
+      fontSize: 11,
+      fontWeight: 700
+    }
+  }, "Desfazer")) : React.createElement("button", {
+    onClick: () => setConf(m.id),
+    style: {
+      padding: '0 14px',
+      minHeight: 34,
+      background: 'transparent',
+      border: '1px solid var(--md-ol)',
+      color: '#fcd34d',
+      fontSize: 11
+    }
+  }, "\u21A9 Desfazer"))));
+}
+function cadParseRelatorioClientes(texto) {
+  const txt = texto.replace(/^﻿/, '').split(/\r?\n/).slice(1).map(l => {
+    const i = l.indexOf(';');
+    return (i >= 0 ? l.slice(i + 1) : l).trim();
+  });
+  const RE_CLI = /^(\d{5,6})\s+(?:-\s+)?(.+?)\s{2,}(.+?)\s*\/\s*([A-Z]{2})(?:\s{2,}(.*))?$/;
+  const RE_LOOSE = /^(\d{5,6})\s+(?:-\s+)?(.+?)\s*\/\s*([A-Z]{2})(?:\s+(\(.*))?$/;
+  const RE_END = /^(.*?)\s*-?\s*CEP\s*(\d{8})?\s*(\d{2}\/\d{2}\/\d{2})\s+(\d{2}\/\d{2}\/\d{2})\s*$/;
+  const cidades = new Set();
+  txt.forEach(t => {
+    const m = t.match(RE_CLI);
+    if (m) cidades.add(m[3].trim());
+    if (t.startsWith('Cidade:') && t.slice(7).trim()) cidades.add(t.slice(7).trim());
+  });
+  const cidOrd = [...cidades].sort((a, b) => b.length - a.length);
+  const out = [];
+  let vend = null,
+    prev = '';
+  const data = s => {
+    const [d, m, a] = s.split('/');
+    return (Number(a) > 50 ? '19' : '20') + a + '-' + m + '-' + d;
+  };
+  for (let i = 0; i < txt.length; i++) {
+    const t = txt[i];
+    if (t.startsWith('Vendedor:')) {
+      const v = t.slice(9).trim();
+      vend = v || (prev && !prev.startsWith('Total') ? prev : vend);
+    }
+    let c = null;
+    const m = t.match(RE_CLI);
+    if (m && cidades.has(m[3].trim())) c = {
+      i: Number(m[1]),
+      n: m[2].trim(),
+      cid: m[3].trim(),
+      uf: m[4],
+      tel: (m[5] || '').trim(),
+      vend
+    };
+    if (!c) {
+      const ml = t.match(RE_LOOSE);
+      if (ml) {
+        const corpo = ml[2].trim();
+        const cd = cidOrd.find(x => corpo.endsWith(' ' + x));
+        if (cd) c = {
+          i: Number(ml[1]),
+          n: corpo.slice(0, -cd.length).trim(),
+          cid: cd,
+          uf: ml[3],
+          tel: (ml[4] || '').trim(),
+          vend
+        };
+      }
+    }
+    if (c) {
+      for (let j = i + 1; j < Math.min(txt.length, i + 4); j++) {
+        const e = txt[j].match(RE_END);
+        if (e) {
+          const end = e[1].trim().replace(/-$/, '').trim();
+          const me = end.match(/^(.*?),\s*([^,]*?)\s*-\s*(.*)$/);
+          c.rua = me ? me[1].trim() : end.split(' - ')[0].trim();
+          c.num = me ? me[2].trim() : '';
+          c.bairro = me ? me[3].trim() : (end.split(' - ')[1] || '').trim();
+          c.cep = e[2] || '';
+          c.cad = data(e[3]);
+          c.ult = e[4] === '30/12/99' ? '' : data(e[4]);
+          break;
+        }
+      }
+      out.push(c);
+    }
+    if (t && !t.startsWith('Cidade') && !t.startsWith('Vendedor')) prev = t;
+  }
+  return out;
+}
+function AtualizarPeloERP({
+  clientes,
+  getClientData,
+  mods,
+  saveMods,
+  criarSnapshot,
+  showToast
+}) {
+  const [dados, setDados] = useState(null);
+  const [sobrescrever, setSobrescrever] = useState(false);
+  const [aplicando, setAplicando] = useState(false);
+  const inputRef = useRef(null);
+  const ler = file => {
+    const fr = new FileReader();
+    fr.onload = () => {
+      try {
+        const lista = cadParseRelatorioClientes(fr.result);
+        if (!lista.length) throw new Error('Nenhum cliente encontrado. Use o relatório "Cliente/Vendedor" salvo como CSV.');
+        setDados(lista);
+      } catch (e) {
+        showToast(e.message, 'error');
+      }
+    };
+    fr.readAsText(file, 'utf-8');
+  };
+  const grafiaCidade = useMemo(() => {
+    const cont = {};
+    clientes.forEach(c => {
+      const d = getClientData(c);
+      if (d.c && d.c !== 'CADASTRO PENDENTE') {
+        const k = cadNorm(d.c);
+        cont[k] = cont[k] || {};
+        cont[k][d.c] = (cont[k][d.c] || 0) + 1;
+      }
+    });
+    const m = {};
+    Object.entries(cont).forEach(([k, v]) => {
+      m[k] = Object.entries(v).sort((a, b) => b[1] - a[1])[0][0];
+    });
+    return m;
+  }, [clientes, getClientData]);
+  const plano = useMemo(() => {
+    if (!dados) return null;
+    const E = {};
+    dados.forEach(c => E[c.i] = c);
+    const r = {
+      encontrados: 0,
+      pendentes: 0,
+      enderecos: 0,
+      telefones: 0,
+      cep: 0,
+      foraDoErp: 0,
+      ignorados: 0,
+      mudancas: {}
+    };
+    const idsCrm = new Set(clientes.map(c => Number(c.i)));
+    dados.forEach(c => {
+      if (!idsCrm.has(c.i)) r.ignorados++;
+    });
+    clientes.forEach(cl => {
+      const e = E[Number(cl.i)];
+      if (!e) {
+        r.foraDoErp++;
+        return;
+      }
+      r.encontrados++;
+      const d = getClientData(cl);
+      const m = mods[cl.i] || {};
+      const ch = {};
+      const pend = !d.c || d.c === 'CADASTRO PENDENTE';
+      const semEnd = !d.r;
+      if (e.rua && (pend || semEnd || sobrescrever)) {
+        const cid = grafiaCidade[cadNorm(e.cid)] || e.cid;
+        if (d.c !== cid) ch.c = cid;
+        if (d.r !== e.rua) ch.r = e.rua;
+        if (String(d.nu || '') !== e.num) ch.nu = e.num;
+        if (d.b !== e.bairro) ch.b = e.bairro;
+        if (Object.keys(ch).length) {
+          if (pend) r.pendentes++;else r.enderecos++;
+        }
+      }
+      if (e.tel && m.t !== e.tel) {
+        ch.t = e.tel;
+        r.telefones++;
+      }
+      if (e.cep && m.cep !== e.cep) {
+        ch.cep = e.cep;
+        r.cep++;
+      }
+      if (e.cad && m.dc !== e.cad) ch.dc = e.cad;
+      if (e.ult && m.du !== e.ult) ch.du = e.ult;
+      if (Object.keys(ch).length) r.mudancas[cl.i] = ch;
+    });
+    return r;
+  }, [dados, clientes, getClientData, mods, sobrescrever, grafiaCidade]);
+  const aplicar = async () => {
+    setAplicando(true);
+    try {
+      await criarSnapshot('Antes de atualizar cadastros pelo ERP');
+      const nm = {
+        ...mods
+      };
+      Object.entries(plano.mudancas).forEach(([id, ch]) => {
+        nm[id] = {
+          ...(nm[id] || {}),
+          ...ch
+        };
+      });
+      await saveMods(nm);
+      showToast(`✅ ${Object.keys(plano.mudancas).length} cadastros atualizados • ${plano.pendentes} pendentes completados`, 'success', {
+        duration: 6000
+      });
+      setDados(null);
+    } finally {
+      setAplicando(false);
+    }
+  };
+  const card = {
+    background: 'var(--md-s3)',
+    border: '1px solid var(--md-ov)',
+    borderRadius: 24,
+    padding: 22
+  };
+  return React.createElement("div", {
+    style: card
+  }, React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600,
+      color: 'var(--md-on)'
+    }
+  }, "\u2B07 Atualizar cadastros pelo ERP"), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      marginTop: 4,
+      lineHeight: 1.6
+    }
+  }, "No ERP gere o relat\xF3rio ", React.createElement("b", null, "Cliente/Vendedor"), " (Clientes: Ativos \u2022 Cidade: Todas), salve como Planilha Excel e depois como CSV.", React.createElement("br", null), "Completa endere\xE7o dos ", React.createElement("b", null, "pendentes"), ", telefone, CEP, data de cadastro e \xFAltima compra. S\xF3 atualiza clientes que j\xE1 est\xE3o no CRM (revenda). ", React.createElement("b", null, "N\xE3o mexe na carteira.")), React.createElement("input", {
+    ref: inputRef,
+    type: "file",
+    accept: ".csv",
+    style: {
+      display: 'none'
+    },
+    onChange: e => {
+      if (e.target.files[0]) ler(e.target.files[0]);
+      e.target.value = '';
+    }
+  }), !plano ? React.createElement("button", {
+    onClick: () => inputRef.current?.click(),
+    style: {
+      marginTop: 16,
+      padding: '0 22px',
+      background: 'var(--md-pc)',
+      border: 'none',
+      color: 'var(--md-onpc)',
+      fontSize: 13,
+      fontWeight: 600
+    }
+  }, "\uD83D\uDCC4 Escolher CSV do relat\xF3rio") : React.createElement("div", {
+    style: {
+      marginTop: 16
+    }
+  }, React.createElement("div", {
+    style: {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))',
+      gap: 10
+    }
+  }, [['No relatório', dados.length], ['Encontrados no CRM', plano.encontrados], ['Pendentes completados', plano.pendentes], ['Endereços preenchidos', plano.enderecos], ['Telefones', plano.telefones], ['CEPs', plano.cep], ['Do CRM fora do relatório', plano.foraDoErp], ['Não são do CRM (ignorados)', plano.ignorados]].map(([l, v]) => React.createElement("div", {
+    key: l,
+    style: {
+      background: 'var(--md-s2)',
+      borderRadius: 16,
+      padding: '12px 14px'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--md-mut)',
+      textTransform: 'uppercase',
+      letterSpacing: 1
+    }
+  }, l), React.createElement("div", {
+    style: {
+      fontSize: 20,
+      fontWeight: 700,
+      color: 'var(--md-on)',
+      marginTop: 2
+    }
+  }, v.toLocaleString('pt-BR'))))), React.createElement("label", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 8,
+      fontSize: 12,
+      color: 'var(--md-onv)',
+      marginTop: 14,
+      cursor: 'pointer'
+    }
+  }, React.createElement("input", {
+    type: "checkbox",
+    checked: sobrescrever,
+    onChange: e => setSobrescrever(e.target.checked)
+  }), "Atualizar tamb\xE9m endere\xE7os que j\xE1 existem no CRM (usar o do ERP)"), React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 8,
+      marginTop: 16
+    }
+  }, React.createElement("button", {
+    onClick: () => setDados(null),
+    disabled: aplicando,
+    style: {
+      padding: '0 18px',
+      background: 'transparent',
+      border: '1px solid var(--md-ol)',
+      color: 'var(--md-onv)',
+      fontSize: 13
+    }
+  }, "Cancelar"), React.createElement("button", {
+    onClick: aplicar,
+    disabled: aplicando || !Object.keys(plano.mudancas).length,
+    style: {
+      padding: '0 22px',
+      background: 'var(--md-pc)',
+      border: 'none',
+      color: 'var(--md-onpc)',
+      fontSize: 13,
+      fontWeight: 600
+    }
+  }, aplicando ? 'Aplicando...' : `✅ Atualizar ${Object.keys(plano.mudancas).length} cadastros`))));
+}
+function CarteiraTab({
+  clientes,
+  getClientData,
+  vendas,
+  aliasClientes,
+  resolveAlias,
+  carteira,
+  carteiraOk,
+  vendedoresAtivos,
+  transferirClientes,
+  carteiraConflOk,
+  salvarCarteiraConflOk,
+  abrirClientes,
+  showToast
+}) {
+  const donos = useMemo(() => [...vendedoresAtivos, 'EMPRESA'], [vendedoresAtivos]);
+  const ativos = useMemo(() => clientes.filter(c => !aliasClientes[String(c.i)]).map(c => getClientData(c)).filter(c => c.a !== 0), [clientes, aliasClientes, getClientData]);
+  const stats = useMemo(() => cadStatsVendas(vendas, resolveAlias), [vendas, resolveAlias]);
+  const [rodando, setRodando] = useState(null);
+  const [massa, setMassa] = useState({
+    de: '',
+    para: '',
+    conf: false
+  });
+  const [hist, setHist] = useState([]);
+  useEffect(() => {
+    window.PetecaCarteira.recentes(40).then(setHist).catch(() => {});
+  }, [carteira]);
+  const regraInicial = id => {
+    const s = stats[String(id)];
+    const v = s && s.vendUlt;
+    return v && vendedoresAtivos.includes(v) ? v : 'EMPRESA';
+  };
+  const semDono = ativos.filter(c => !carteira[String(c.i)]);
+  const contagem = useMemo(() => {
+    const m = {};
+    donos.forEach(d => m[d] = 0);
+    ativos.forEach(c => {
+      const d = (carteira[String(c.i)] || {}).vendedor;
+      if (d) m[d] = (m[d] || 0) + 1;
+    });
+    return m;
+  }, [ativos, carteira, donos]);
+  const conflitos = useMemo(() => {
+    const lim = new Date(Date.now() - 90 * 864e5).toISOString().slice(0, 10);
+    const m = {};
+    Object.values(vendas).forEach(arr => (arr || []).forEach(v => {
+      if (!v.clienteId || (v.data || '') < lim) return;
+      const id = String(resolveAlias(v.clienteId));
+      const dono = (carteira[id] || {}).vendedor;
+      const vend = String(v.vendedor || '').toUpperCase().trim();
+      if (!dono || !vend || vend === dono) return;
+      if (carteiraConflOk[id] && carteiraConflOk[id] >= v.data) return;
+      const k = id + '|' + vend;
+      const x = m[k] = m[k] || {
+        id,
+        dono,
+        vend,
+        n: 0,
+        ult: ''
+      };
+      x.n++;
+      if (v.data > x.ult) x.ult = v.data;
+    }));
+    const nomes = {};
+    ativos.forEach(c => nomes[String(c.i)] = c.n);
+    return Object.values(m).map(x => ({
+      ...x,
+      nome: nomes[x.id] || '#' + x.id
+    })).sort((a, b) => b.ult.localeCompare(a.ult));
+  }, [vendas, carteira, resolveAlias, carteiraConflOk, ativos]);
+  const aplicarRegra = async (lista, motivo) => {
+    setRodando('regra');
+    try {
+      const porDono = {};
+      lista.forEach(c => {
+        const d = regraInicial(c.i);
+        (porDono[d] = porDono[d] || []).push(c.i);
+      });
+      for (const [d, ids] of Object.entries(porDono)) await transferirClientes(ids, d, motivo);
+    } finally {
+      setRodando(null);
+    }
+  };
+  const prevSemDono = useMemo(() => {
+    const m = {};
+    semDono.forEach(c => {
+      const d = regraInicial(c.i);
+      m[d] = (m[d] || 0) + 1;
+    });
+    return m;
+  }, [semDono, stats, vendedoresAtivos]);
+  const card = {
+    background: 'var(--md-s3)',
+    border: '1px solid var(--md-ov)',
+    borderRadius: 24,
+    padding: 20,
+    marginBottom: 16
+  };
+  if (carteiraOk === 'erro') return React.createElement("div", {
+    style: card
+  }, React.createElement("div", {
+    style: {
+      fontSize: 15,
+      color: '#fca5a5',
+      fontWeight: 600
+    }
+  }, "\u26A0 Tabela da carteira n\xE3o encontrada"), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      marginTop: 6
+    }
+  }, "Rode o arquivo ", React.createElement("b", null, "supabase-carteira.sql"), " no SQL Editor do Supabase e recarregue a p\xE1gina."));
+  if (!carteiraOk) return React.createElement("div", {
+    style: card
+  }, "Carregando carteira...");
+  const vazia = Object.keys(carteira).length === 0;
+  return React.createElement("div", {
+    style: {
+      animation: 'fadeIn .3s ease'
+    }
+  }, semDono.length > 0 && React.createElement("div", {
+    style: {
+      ...card,
+      border: '1px solid color-mix(in srgb,#fcd34d 40%,transparent)'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600,
+      color: 'var(--md-on)'
+    }
+  }, vazia ? '🚀 Carga inicial da carteira' : `🆕 ${semDono.length} cliente(s) sem dono`), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      marginTop: 4
+    }
+  }, "Regra: dono = ", React.createElement("b", null, "vendedor da \xFAltima compra"), ", se ele for um vendedor ativo. Sen\xE3o (ou se nunca comprou) \u2192 ", React.createElement("b", null, "EMPRESA"), ". Depois disso, s\xF3 muda por transfer\xEAncia."), React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 6,
+      flexWrap: 'wrap',
+      marginTop: 12
+    }
+  }, Object.entries(prevSemDono).sort((a, b) => b[1] - a[1]).map(([d, n]) => React.createElement("span", {
+    key: d,
+    style: {
+      padding: '6px 14px',
+      borderRadius: 999,
+      background: 'var(--md-s5)',
+      fontSize: 12,
+      color: 'var(--md-on)'
+    }
+  }, d, ": ", React.createElement("b", null, n)))), React.createElement("button", {
+    disabled: !!rodando,
+    onClick: () => aplicarRegra(semDono, vazia ? 'Carga inicial (último vendedor)' : 'Cliente novo (último vendedor)'),
+    style: {
+      marginTop: 14,
+      padding: '0 22px',
+      background: 'var(--md-pc)',
+      border: 'none',
+      color: 'var(--md-onpc)',
+      fontSize: 13,
+      fontWeight: 600
+    }
+  }, rodando === 'regra' ? 'Aplicando...' : `✅ Definir dono de ${semDono.length} cliente(s)`)), React.createElement("div", {
+    style: {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))',
+      gap: 12,
+      marginBottom: 16
+    }
+  }, donos.map(d => React.createElement("div", {
+    key: d,
+    onClick: () => abrirClientes(d),
+    title: "Ver clientes desta carteira",
+    style: {
+      cursor: 'pointer',
+      background: 'var(--md-s3)',
+      border: '1px solid var(--md-ov)',
+      borderRadius: 20,
+      padding: '16px 18px'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--md-mut)',
+      textTransform: 'uppercase',
+      letterSpacing: 1
+    }
+  }, d === 'EMPRESA' ? '🏢 EMPRESA' : '👤 ' + d), React.createElement("div", {
+    style: {
+      fontSize: 26,
+      fontWeight: 700,
+      color: d === 'EMPRESA' ? '#fcd34d' : 'var(--md-p75)',
+      marginTop: 4
+    }
+  }, (contagem[d] || 0).toLocaleString('pt-BR')), React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--md-mut)'
+    }
+  }, "clientes")))), React.createElement("div", {
+    style: card
+  }, React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600,
+      color: 'var(--md-on)'
+    }
+  }, "\uD83D\uDD01 Transferir carteira inteira"), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      marginTop: 4
+    }
+  }, "Ex.: vendedor saiu da empresa. Os Kanbans abertos v\xE3o junto."), React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 8,
+      marginTop: 12,
+      flexWrap: 'wrap',
+      alignItems: 'center'
+    }
+  }, React.createElement("select", {
+    value: massa.de,
+    onChange: e => setMassa({
+      ...massa,
+      de: e.target.value,
+      conf: false
+    }),
+    style: {
+      padding: '0 14px',
+      background: 'var(--md-s2)',
+      border: '1px solid var(--md-ol)',
+      color: 'var(--md-on)'
+    }
+  }, React.createElement("option", {
+    value: ""
+  }, "De..."), [...new Set([...donos, ...Object.values(carteira).map(x => x.vendedor)])].map(d => React.createElement("option", {
+    key: d,
+    value: d
+  }, d, " (", contagem[d] || 0, ")"))), React.createElement("span", {
+    style: {
+      color: 'var(--md-mut)'
+    }
+  }, "\u2192"), React.createElement("select", {
+    value: massa.para,
+    onChange: e => setMassa({
+      ...massa,
+      para: e.target.value,
+      conf: false
+    }),
+    style: {
+      padding: '0 14px',
+      background: 'var(--md-s2)',
+      border: '1px solid var(--md-ol)',
+      color: 'var(--md-on)'
+    }
+  }, React.createElement("option", {
+    value: ""
+  }, "Para..."), donos.filter(d => d !== massa.de).map(d => React.createElement("option", {
+    key: d,
+    value: d
+  }, d))), !massa.conf ? React.createElement("button", {
+    disabled: !massa.de || !massa.para || !contagem[massa.de],
+    onClick: () => setMassa({
+      ...massa,
+      conf: true
+    }),
+    style: {
+      padding: '0 20px',
+      background: 'var(--md-pc)',
+      border: 'none',
+      color: 'var(--md-onpc)',
+      fontSize: 13,
+      fontWeight: 600
+    }
+  }, "Transferir") : React.createElement(React.Fragment, null, React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: '#fcd34d'
+    }
+  }, "Mover ", contagem[massa.de], " clientes de ", massa.de, " para ", massa.para, "?"), React.createElement("button", {
+    onClick: () => setMassa({
+      ...massa,
+      conf: false
+    }),
+    style: {
+      padding: '0 14px',
+      background: 'transparent',
+      border: '1px solid var(--md-ol)',
+      color: 'var(--md-onv)',
+      fontSize: 12
+    }
+  }, "N\xE3o"), React.createElement("button", {
+    disabled: !!rodando,
+    onClick: async () => {
+      setRodando('massa');
+      try {
+        const ids = Object.values(carteira).filter(x => x.vendedor === massa.de).map(x => x.cliente_id);
+        await transferirClientes(ids, massa.para, `Carteira inteira de ${massa.de}`);
+        setMassa({
+          de: '',
+          para: '',
+          conf: false
+        });
+      } finally {
+        setRodando(null);
+      }
+    },
+    style: {
+      padding: '0 18px',
+      background: '#dc2626',
+      border: 'none',
+      color: '#fff',
+      fontSize: 12,
+      fontWeight: 700
+    }
+  }, rodando === 'massa' ? 'Movendo...' : 'Sim, transferir')))), React.createElement("div", {
+    style: card
+  }, React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600,
+      color: 'var(--md-on)'
+    }
+  }, "\u26A0 Vendas fora da carteira ", React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      fontWeight: 400
+    }
+  }, "\u2022 \xFAltimos 90 dias \u2022 ", conflitos.length)), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      marginTop: 4,
+      marginBottom: 10
+    }
+  }, "Cliente comprou com um vendedor diferente do dono. Transfira ou mantenha (some at\xE9 a pr\xF3xima venda fora da carteira)."), !conflitos.length && React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: '#86efac',
+      padding: '10px 0'
+    }
+  }, "\u2713 Nenhum conflito."), React.createElement("div", {
+    style: {
+      maxHeight: 380,
+      overflowY: 'auto'
+    }
+  }, conflitos.map(x => React.createElement("div", {
+    key: x.id + x.vend,
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      gap: 10,
+      padding: '9px 0',
+      borderBottom: '1px solid var(--md-ov)',
+      fontSize: 12,
+      flexWrap: 'wrap'
+    }
+  }, React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 220
+    }
+  }, React.createElement("div", {
+    style: {
+      color: 'var(--md-on)',
+      fontWeight: 600
+    }
+  }, x.nome, " ", React.createElement("span", {
+    style: {
+      color: 'var(--md-mut)',
+      fontWeight: 400
+    }
+  }, "#", x.id)), React.createElement("div", {
+    style: {
+      color: 'var(--md-mut)'
+    }
+  }, "dono ", React.createElement("b", null, x.dono), " \u2022 vendido por ", React.createElement("b", null, x.vend), " (", x.n, "x, \xFAlt. ", fmtD(x.ult), ")")), vendedoresAtivos.includes(x.vend) && React.createElement("button", {
+    onClick: () => transferirClientes([x.id], x.vend, `Comprou com ${x.vend}`),
+    style: {
+      padding: '0 14px',
+      minHeight: 34,
+      background: 'var(--md-pc)',
+      border: 'none',
+      color: 'var(--md-onpc)',
+      fontSize: 11,
+      fontWeight: 600
+    }
+  }, "Passar para ", x.vend), React.createElement("button", {
+    onClick: () => salvarCarteiraConflOk({
+      ...carteiraConflOk,
+      [x.id]: x.ult
+    }),
+    style: {
+      padding: '0 14px',
+      minHeight: 34,
+      background: 'transparent',
+      border: '1px solid var(--md-ol)',
+      color: 'var(--md-onv)',
+      fontSize: 11
+    }
+  }, "Manter com ", x.dono))))), React.createElement("div", {
+    style: card
+  }, React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600,
+      color: 'var(--md-on)',
+      marginBottom: 10
+    }
+  }, "\uD83D\uDD51 \xDAltimas transfer\xEAncias"), !hist.length && React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)'
+    }
+  }, "Nenhuma ainda."), hist.map(h => {
+    const c = ativos.find(x => String(x.i) === String(h.cliente_id));
+    return React.createElement("div", {
+      key: h.id,
+      style: {
+        fontSize: 12,
+        padding: '6px 0',
+        borderBottom: '1px solid var(--md-ov)',
+        color: 'var(--md-onv)'
+      }
+    }, React.createElement("b", {
+      style: {
+        color: 'var(--md-on)'
+      }
+    }, c ? c.n : '#' + h.cliente_id), " \u2022 ", h.de || '—', " \u2192 ", React.createElement("b", null, h.para), " \u2022 ", h.motivo || '', " ", React.createElement("span", {
+      style: {
+        color: 'var(--md-mut)'
+      }
+    }, "\u2022 ", h.por, " \u2022 ", new Date(h.em).toLocaleString('pt-BR')));
+  })));
+}
+function CarteiraCliente({
+  clienteId,
+  carteira,
+  vendedoresAtivos,
+  transferirClientes
+}) {
+  const info = carteira[String(clienteId)];
+  const [para, setPara] = useState('');
+  const [motivo, setMotivo] = useState('');
+  const [hist, setHist] = useState([]);
+  const [salvando, setSalvando] = useState(false);
+  const carregar = () => window.PetecaCarteira.historico(clienteId).then(setHist).catch(() => {});
+  useEffect(() => {
+    carregar();
+  }, [clienteId, info && info.vendedor]);
+  return React.createElement("div", {
+    style: {
+      background: 'var(--md-s1)',
+      borderRadius: 14,
+      padding: 16,
+      marginBottom: 16
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 600,
+      color: 'var(--md-p75)',
+      marginBottom: 8
+    }
+  }, "\uD83D\uDC64 Carteira"), React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: 'var(--md-on)',
+      fontWeight: 600
+    }
+  }, info ? info.vendedor : 'Sem dono definido'), info && React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--md-mut)',
+      marginTop: 2
+    }
+  }, "desde ", new Date(info.desde).toLocaleDateString('pt-BR'), " \u2022 por ", info.por || '—'), React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 8,
+      marginTop: 10,
+      flexWrap: 'wrap'
+    }
+  }, React.createElement("select", {
+    value: para,
+    onChange: e => setPara(e.target.value),
+    style: {
+      padding: '0 12px',
+      background: 'var(--md-s3)',
+      border: '1px solid var(--md-ov)',
+      color: 'var(--md-on)'
+    }
+  }, React.createElement("option", {
+    value: ""
+  }, "Transferir para..."), [...vendedoresAtivos, 'EMPRESA'].filter(v => !info || v !== info.vendedor).map(v => React.createElement("option", {
+    key: v,
+    value: v
+  }, v))), React.createElement("input", {
+    value: motivo,
+    onChange: e => setMotivo(e.target.value),
+    placeholder: "Motivo (opcional)",
+    style: {
+      flex: 1,
+      minWidth: 140,
+      padding: '0 12px',
+      background: 'var(--md-s3)',
+      border: '1px solid var(--md-ov)',
+      color: 'var(--md-on)'
+    }
+  }), React.createElement("button", {
+    disabled: !para || salvando,
+    onClick: async () => {
+      setSalvando(true);
+      try {
+        await transferirClientes([clienteId], para, motivo || 'Transferência manual');
+        setPara('');
+        setMotivo('');
+        carregar();
+      } finally {
+        setSalvando(false);
+      }
+    },
+    style: {
+      padding: '0 18px',
+      background: 'var(--md-pc)',
+      border: 'none',
+      color: 'var(--md-onpc)',
+      fontSize: 12,
+      fontWeight: 600
+    }
+  }, salvando ? '...' : 'Transferir')), hist.length > 0 && React.createElement("div", {
+    style: {
+      marginTop: 12
+    }
+  }, hist.slice(0, 8).map(h => React.createElement("div", {
+    key: h.id,
+    style: {
+      fontSize: 11,
+      color: 'var(--md-mut)',
+      padding: '3px 0'
+    }
+  }, new Date(h.em).toLocaleDateString('pt-BR'), " \u2022 ", h.de || '—', " \u2192 ", React.createElement("b", {
+    style: {
+      color: 'var(--md-onv)'
+    }
+  }, h.para), " \u2022 ", h.motivo || '', " \u2022 ", h.por))));
 }
 function LoginCRM({
   onLogin

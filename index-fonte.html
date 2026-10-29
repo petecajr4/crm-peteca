@@ -213,7 +213,7 @@ window.storage={get:function(k){return o().then(function(d){return new Promise(f
   // SINCRONIZAÇÃO DOS DADOS DO CRM (IndexedDB local <-> tabela crm_kv)
   // O navegador vira cache; a nuvem é a fonte oficial.
   // ------------------------------------------------------------------
-  var SYNC_RE = /^(peteca_crm_clientes|peteca_crm_mods|peteca_crm_vendas_index|peteca_vendas_ano_\d{4}|peteca_anotacoes_clientes|peteca_alias_clientes|peteca_metas)$/;
+  var SYNC_RE = /^(peteca_crm_clientes|peteca_crm_mods|peteca_crm_vendas_index|peteca_vendas_ano_\d{4}|peteca_anotacoes_clientes|peteca_alias_clientes|peteca_metas|peteca_nao_duplicados|peteca_mesclagens|peteca_carteira_ok)$/;
   var META_KEY = 'peteca_sync_meta', PEND_KEY = 'peteca_sync_pending';
   var meta = ler(META_KEY, {}), pend = ler(PEND_KEY, {}), seq = Date.now();
   var raw = null, flushing = null, timer = null, autoIv = null;
@@ -505,6 +505,61 @@ window.storage={get:function(k){return o().then(function(d){return new Promise(f
     if (!fn) return Promise.resolve({ ok: false, error: 'Ação desconhecida: ' + action });
     return Promise.resolve().then(function () { return fn(payload || {}); })
       .catch(function (e) { return { ok: false, error: e.message || String(e) }; });
+  };
+
+
+  // ------------------------------------------------------------------
+  // CARTEIRA — dono de cada cliente (tabela própria, 1 linha por cliente)
+  // ------------------------------------------------------------------
+  function lotes(arr, n) { var out = []; for (var i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; }
+  window.PetecaCarteira = {
+    listar: function () {
+      // pagina de 1000 em 1000 (limite padrão do PostgREST)
+      var todos = [];
+      function pag(off) {
+        return rest('carteira?select=cliente_id,vendedor,desde,por&order=cliente_id&limit=1000&offset=' + off).then(function (r) {
+          todos = todos.concat(r || []);
+          return (r && r.length === 1000) ? pag(off + 1000) : todos;
+        });
+      }
+      return pag(0);
+    },
+    historico: function (cid) {
+      return rest('carteira_historico?select=*&cliente_id=eq.' + enc(String(cid)) + '&order=em.desc&limit=100');
+    },
+    recentes: function (n) { return rest('carteira_historico?select=*&order=em.desc&limit=' + (n || 50)); },
+    // itens: [{cliente_id, de, para}] • move também os Kanbans abertos
+    transferir: function (itens, motivo, onProg) {
+      var por = nomeAtual(), agora = new Date().toISOString();
+      itens = (itens || []).filter(function (x) { return x && x.para && x.de !== x.para; });
+      if (!itens.length) return Promise.resolve({ ok: true, transferidos: 0, kanbans: 0 });
+      var grupos = lotes(itens, 400), feitos = 0, kmov = 0;
+      return grupos.reduce(function (p, g) {
+        return p.then(function () {
+          return rest('carteira?on_conflict=cliente_id', { method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal',
+            body: g.map(function (x) { return { cliente_id: String(x.cliente_id), vendedor: x.para, desde: agora, por: por }; }) });
+        }).then(function () {
+          return rest('carteira_historico', { method: 'POST', prefer: 'return=minimal',
+            body: g.map(function (x) { return { cliente_id: String(x.cliente_id), de: x.de || null, para: x.para, por: por, motivo: motivo || null }; }) });
+        }).then(function () {
+          // Kanbans abertos acompanham o cliente
+          var lista = g.map(function (x) { return '"' + String(x.cliente_id).replace(/"/g, '') + '"'; }).join(',');
+          return rest('kanbans?select=id,cliente_id,vendedor&finalizado=eq.false&cliente_id=in.(' + enc(lista) + ')').then(function (ks) {
+            var destino = {}; g.forEach(function (x) { destino[String(x.cliente_id)] = x.para; });
+            return (ks || []).reduce(function (p2, k) {
+              var para = destino[String(k.cliente_id)];
+              if (!para || para === 'EMPRESA' || para === k.vendedor) return p2;
+              return p2.then(function () {
+                return rest('kanbans?id=eq.' + k.id, { method: 'PATCH', body: { vendedor: para }, prefer: 'return=minimal' });
+              }).then(function () {
+                kmov++;
+                return hist(k.id, 'transferido', { por: por, de: k.vendedor, para: para, detalhes: motivo || 'Transferência de carteira' });
+              });
+            }, Promise.resolve());
+          }).catch(function () {});
+        }).then(function () { feitos += g.length; if (onProg) onProg(feitos, itens.length); });
+      }, Promise.resolve()).then(function () { return { ok: true, transferidos: feitos, kanbans: kmov }; });
+    }
   };
 
   // ------------------------------------------------------------------
@@ -1131,11 +1186,11 @@ function CRMPeteca() {
         const mesesList = Object.keys(mesesMap).sort();
         logs.push(`Meses detectados: ${mesesList.length} (${mesesList.join(', ')})`);
         mesesList.forEach(m => {
-          logs.push(`   📅 ${m}: ${mesesMap[m].count} vendas — R$ ${mesesMap[m].valor.toLocaleString('pt-BR',{minimumFractionDigits:2})}`);
+          logs.push(`   📅 ${m}: ${mesesMap[m].count} vendas — R$ ${mesesMap[m].valor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}`);
         });
         
         const totalValor = merged.reduce((s,v) => s + v.valorLiquido, 0);
-        logs.push(`Valor total: R$ ${totalValor.toLocaleString('pt-BR', {minimumFractionDigits:2})}`);
+        logs.push(`Valor total: R$ ${totalValor.toLocaleString('pt-BR', {minimumFractionDigits:2,maximumFractionDigits:2})}`);
       }
       
       setParsedPreview({vendas: merged, logs, novosClientes});
@@ -1480,7 +1535,7 @@ function CRMPeteca() {
 
   // v2: Keyboard shortcuts globais (Cmd+K, 1-9 tabs, ESC)
   useEffect(() => {
-    const tabKeys = ["dashboard","clientes","importar","cidade","produtos","vendedores","fluxo","abandono","metas"];
+    const tabKeys = ["dashboard","clientes","cadastros","carteira","importar","cidade","produtos","vendedores","fluxo"];
     const handler = (e) => {
       // Cmd+K / Ctrl+K -> abrir command palette
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -1684,6 +1739,7 @@ function CRMPeteca() {
       r: mod.r !== undefined ? mod.r : client.r,
       nu: mod.nu !== undefined ? mod.nu : client.nu,
       n: mod.n !== undefined && mod.n !== '' ? mod.n : client.n,
+      t: mod.t || client.t || '', cep: mod.cep || '',
       notes: mod.notes || ""
     };
   }, [mods]);
@@ -1706,6 +1762,100 @@ function CRMPeteca() {
   const aliasSourceIds = useMemo(() => {
     return new Set(Object.keys(aliasClientes).map(String));
   }, [aliasClientes]);
+
+  // ============================================================
+  // v11: CARTEIRA + DUPLICADOS
+  // ============================================================
+  const [carteira, setCarteira] = useState({});
+  const [carteiraOk, setCarteiraOk] = useState(false);
+  const [vendedoresAtivos, setVendedoresAtivos] = useState(['ANDERSON','ANE','DENIS','LEX','REGINALDO','RODRIGO']);
+  const [naoDup, setNaoDup] = useState({});
+  const [mesclagens, setMesclagens] = useState([]);
+  const [carteiraConflOk, setCarteiraConflOk] = useState({});
+  const [carteiraFiltro, setCarteiraFiltro] = useState('TODAS');
+  const [loteTransf, setLoteTransf] = useState(null);
+  const loadCarteira = async () => {
+    try { const r = await window.PetecaCarteira.listar(); const m = {}; (r || []).forEach(x => { m[String(x.cliente_id)] = x; }); setCarteira(m); setCarteiraOk(true); }
+    catch (e) { console.warn('carteira:', e); setCarteiraOk(/relation|does not exist|42P01|404/i.test(e.message) ? 'erro' : true); }
+  };
+  const lerKV = async (k, def) => { try { const r = await window.storage.get(k); return r && r.value ? JSON.parse(r.value) : def; } catch (e) { return def; } };
+  const loadCadastrosExtras = async () => {
+    setNaoDup(await lerKV('peteca_nao_duplicados', {}));
+    setMesclagens(await lerKV('peteca_mesclagens', []));
+    setCarteiraConflOk(await lerKV('peteca_carteira_ok', {}));
+  };
+  const salvarNaoDup = async (v) => { setNaoDup(v); await window.storage.set('peteca_nao_duplicados', JSON.stringify(v)); };
+  const salvarMesclagens = async (v) => { setMesclagens(v); await window.storage.set('peteca_mesclagens', JSON.stringify(v)); };
+  const salvarCarteiraConflOk = async (v) => { setCarteiraConflOk(v); await window.storage.set('peteca_carteira_ok', JSON.stringify(v)); };
+  useEffect(() => {
+    loadCarteira(); loadCadastrosExtras();
+    window.kanbanAPI('getUsuarios').then(r => { if (r.ok && r.usuarios.length) setVendedoresAtivos(r.usuarios.filter(u => u.tipo === 'vendedor').map(u => u.nome)); });
+    const f = () => { if (!document.hidden) loadCarteira(); };
+    document.addEventListener('visibilitychange', f);
+    const g = (e) => { const ks = (e.detail && e.detail.keys) || []; if (ks.some(k => ['peteca_nao_duplicados','peteca_mesclagens','peteca_carteira_ok'].includes(k))) loadCadastrosExtras(); };
+    window.addEventListener('peteca-sync-changed', g);
+    return () => { document.removeEventListener('visibilitychange', f); window.removeEventListener('peteca-sync-changed', g); };
+    // eslint-disable-next-line
+  }, []);
+  const donoDe = useCallback((id) => { const r = String(resolveAlias(id)); return (carteira[r] || {}).vendedor || null; }, [carteira, resolveAlias]);
+  const transferirClientes = async (ids, para, motivo) => {
+    const unicos = [...new Set(ids.map(i => String(resolveAlias(i))))];
+    const itens = unicos.map(id => ({ cliente_id: id, de: (carteira[id] || {}).vendedor || null, para }));
+    try {
+      const r = await window.PetecaCarteira.transferir(itens, motivo);
+      await loadCarteira();
+      if (r.kanbans) { try { loadKanbansAdmin(); } catch (e) {} }
+      showToast(`👤 ${r.transferidos} cliente(s) → ${para}${r.kanbans ? ` • ${r.kanbans} Kanban(s) movido(s)` : ''}`);
+      return r;
+    } catch (e) { showToast('Erro na transferência: ' + e.message, 'error'); throw e; }
+  };
+
+  // Mesclar grupos de duplicados (lote) — fica o principal, com o nome mais recente
+  const mesclarGrupos = async (grupos) => {
+    if (!grupos.length) return;
+    await criarSnapshot(grupos.length > 1 ? `Antes de mesclar ${grupos.length} grupos` : 'Antes de mesclar cadastros');
+    const novoAlias = { ...aliasClientes }; const novosMods = { ...mods }; const logs = []; const herdaCarteira = {};
+    const porId = {}; clientes.forEach(c => { porId[String(c.i)] = c; });
+    grupos.forEach(g => {
+      const P = String(g.principal); const outros = g.membros.map(String).filter(x => x !== P);
+      const pm = { ...(novosMods[P] || {}) };
+      const antes = { n: pm.n, c: pm.c, r: pm.r, nu: pm.nu, b: pm.b, t: pm.t, cep: pm.cep, d: pm.d };
+      const dadosP = getClientData(porId[P] || { i: P });
+      outros.forEach(o => {
+        novoAlias[o] = P;
+        Object.keys(novoAlias).forEach(k => { if (String(novoAlias[k]) === o) novoAlias[k] = P; });
+        const d = getClientData(porId[o] || { i: o }); const mo = novosMods[o] || {};
+        if ((!dadosP.c || dadosP.c === 'CADASTRO PENDENTE') && d.c && d.c !== 'CADASTRO PENDENTE') { pm.c = d.c; pm.r = d.r; pm.nu = d.nu; pm.b = d.b; dadosP.c = d.c; }
+        if (!pm.t && !dadosP.t && mo.t) pm.t = mo.t;
+        if (!pm.cep && mo.cep) pm.cep = mo.cep;
+        if (!carteira[P] && carteira[o] && !herdaCarteira[P]) herdaCarteira[P] = carteira[o].vendedor;
+      });
+      delete novoAlias[P];
+      if (g.nomeFinal && g.nomeFinal !== dadosP.n) pm.n = g.nomeFinal;
+      // grupo IDE: se todo o grupo foi mesclado, o IDE some
+      const ideP = dadosP.d;
+      if (ideP) { const resto = clientes.filter(c => getClientData(c).d === ideP && !g.membros.map(String).includes(String(c.i)) && !novoAlias[String(c.i)]); if (!resto.length) pm.d = null; }
+      novosMods[P] = pm;
+      logs.push({ id: Date.now() + '_' + P, principal: P, outros, nomeFinal: pm.n || dadosP.n, antes, motivos: g.motivos || [], em: new Date().toISOString(), por: adminName });
+    });
+    await saveMods(novosMods);
+    await salvarAlias(novoAlias);
+    await salvarMesclagens([...(mesclagens || []), ...logs]);
+    for (const [P, dono] of Object.entries(herdaCarteira)) { try { await window.PetecaCarteira.transferir([{ cliente_id: P, de: null, para: dono }], 'Herdado na mesclagem'); } catch (e) {} }
+    if (Object.keys(herdaCarteira).length) loadCarteira();
+    showToast(`🔗 ${grupos.length} mesclagem(ns) feita(s) • ${logs.reduce((s, l) => s + l.outros.length, 0)} cadastro(s) absorvido(s)`, 'success', { duration: 5000 });
+  };
+  const desfazerMesclagem = async (logId) => {
+    const log = (mesclagens || []).find(m => m.id === logId); if (!log) return;
+    await criarSnapshot('Antes de desfazer mesclagem');
+    const novoAlias = { ...aliasClientes }; log.outros.forEach(o => { if (String(novoAlias[o]) === String(log.principal)) delete novoAlias[o]; });
+    const novosMods = { ...mods }; const pm = { ...(novosMods[log.principal] || {}) };
+    Object.entries(log.antes || {}).forEach(([k, v]) => { if (v === undefined) delete pm[k]; else pm[k] = v; });
+    novosMods[log.principal] = pm;
+    await saveMods(novosMods); await salvarAlias(novoAlias);
+    await salvarMesclagens((mesclagens || []).filter(m => m.id !== logId));
+    showToast(`↩ Mesclagem desfeita: ${log.outros.length} cadastro(s) separado(s) de novo`);
+  };
 
   // v3 FIX: set global de IDs inativos (aplicar mods) — usado em todas as abas para filtrar vendas
   const inativosIds = useMemo(() => {
@@ -1748,6 +1898,7 @@ function CRMPeteca() {
     else if (statusFiltro === "PENDENTES") list = list.filter(c => c.c === "CADASTRO PENDENTE");
     
     if (cidadeFiltro !== "TODAS") list = list.filter(c => c.c === cidadeFiltro);
+    if (carteiraFiltro !== 'TODAS') list = list.filter(c => carteiraFiltro === 'SEM' ? !carteira[String(c.i)] : (carteira[String(c.i)] || {}).vendedor === carteiraFiltro);
     if (ideFiltro !== "TODOS") {
       if (ideFiltro === "COM_IDE") list = list.filter(c => c.d);
       else if (ideFiltro === "SEM_IDE") list = list.filter(c => !c.d);
@@ -1764,7 +1915,7 @@ function CRMPeteca() {
     }
     
     return list;
-  }, [clientes, mods, search, cidadeFiltro, ideFiltro, statusFiltro, getClientData, aliasSourceIds]);
+  }, [clientes, mods, search, cidadeFiltro, ideFiltro, statusFiltro, getClientData, aliasSourceIds, carteiraFiltro, carteira]);
 
   const paged = useMemo(() => {
     const start = page * PAGE_SIZE;
@@ -2656,6 +2807,8 @@ function CRMPeteca() {
           {[
             {key:"dashboard",label:"Dashboard",icon:"📊"},
             {key:"clientes",label:"Clientes",icon:"👥"},
+            {key:"cadastros",label:"Cadastros",icon:"🧹"},
+            {key:"carteira",label:"Carteira",icon:"👤"},
             {key:"importar",label:"Importar",icon:"📥"},
             {key:"cidade",label:"Cidade",icon:"🏙"},
             {key:"produtos",label:"Produtos",icon:"📦"},
@@ -3024,12 +3177,12 @@ function CRMPeteca() {
                 </div>
                 <PrintExportButtons 
                   onPrint={() => {
-                    const rows = topClientes.map((c,i) => `<tr><td>${i+1}</td><td>${c.nome}${c.isIde?' 🔗':''}</td><td>${c.cidade}</td><td>${c.vendas}</td><td>R$ ${c.valor.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td></tr>`).join('');
+                    const rows = topClientes.map((c,i) => `<tr><td>${i+1}</td><td>${c.nome}${c.isIde?' 🔗':''}</td><td>${c.cidade}</td><td>${c.vendas}</td><td>R$ ${c.valor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>`).join('');
                     printContent('Dashboard — Top Clientes', `
                       <div class="kpi-row">
-                        <div class="kpi"><div class="kpi-label">Faturamento</div><div class="kpi-value">R$ ${fatTotal.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div></div>
+                        <div class="kpi"><div class="kpi-label">Faturamento</div><div class="kpi-value">R$ ${fatTotal.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div></div>
                         <div class="kpi"><div class="kpi-label">Vendas</div><div class="kpi-value">${qtdVendas}</div></div>
-                        <div class="kpi"><div class="kpi-label">Ticket Médio</div><div class="kpi-value">R$ ${ticketMedio.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div></div>
+                        <div class="kpi"><div class="kpi-label">Ticket Médio</div><div class="kpi-value">R$ ${ticketMedio.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div></div>
                         <div class="kpi"><div class="kpi-label">Clientes</div><div class="kpi-value">${clientesUnicos}</div></div>
                       </div>
                       <div class="section">Top 30 Clientes</div>
@@ -3048,8 +3201,8 @@ function CRMPeteca() {
             {/* KPIs principais */}
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:16,marginBottom:24}}>
               {[
-                {label:"Faturamento",value:"R$ "+fatTotal.toLocaleString('pt-BR',{minimumFractionDigits:2}),icon:"💰",color:"#22c55e"},
-                {label:"Ticket Médio",value:"R$ "+ticketMedio.toLocaleString('pt-BR',{minimumFractionDigits:2}),icon:"🎯",color:"#3b82f6"},
+                {label:"Faturamento",value:"R$ "+fatTotal.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),icon:"💰",color:"#22c55e"},
+                {label:"Ticket Médio",value:"R$ "+ticketMedio.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),icon:"🎯",color:"#3b82f6"},
                 {label:"Vendas",value:qtdVendas.toLocaleString('pt-BR'),icon:"🧾",color:"#8b5cf6"},
                 {label:"Clientes Ativos",value:clientesUnicos.toLocaleString('pt-BR'),icon:"👥",color:"#06b6d4"},
                 {label:"Produtos Vendidos",value:produtosVendidos.toLocaleString('pt-BR'),icon:"📦",color:"#f59e0b"},
@@ -3141,7 +3294,7 @@ function CRMPeteca() {
                                         background:"var(--md-s1)",border:`1px solid ${cor[0]}`,borderRadius:8,padding:"6px 10px",
                                         whiteSpace:"nowrap",zIndex:100,boxShadow:"0 4px 12px rgba(0,0,0,0.5)",pointerEvents:"none"}}>
                                         <div style={{fontSize:10,color:"var(--md-mut)"}}>{mesesLabel[mi]}/{ano}</div>
-                                        <div style={{fontSize:12,fontWeight:700,color:cor[0]}}>R$ {valor.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+                                        <div style={{fontSize:12,fontWeight:700,color:cor[0]}}>R$ {valor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
                                         <div style={{fontSize:9,color:"var(--md-mut)"}}>{d.count} vendas</div>
                                       </div>
                                     )}
@@ -3492,8 +3645,8 @@ function CRMPeteca() {
                 {/* KPIs da cidade */}
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:16,marginBottom:24}}>
                   {[
-                    {label:"Faturamento",value:"R$ "+dadosCidade.valor.toLocaleString('pt-BR',{minimumFractionDigits:2}),icon:"💰",color:"#22c55e"},
-                    {label:"Ticket Médio",value:"R$ "+(dadosCidade.valor/dadosCidade.vendas).toLocaleString('pt-BR',{minimumFractionDigits:2}),icon:"🎯",color:"#3b82f6"},
+                    {label:"Faturamento",value:"R$ "+dadosCidade.valor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),icon:"💰",color:"#22c55e"},
+                    {label:"Ticket Médio",value:"R$ "+(dadosCidade.valor/dadosCidade.vendas).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),icon:"🎯",color:"#3b82f6"},
                     {label:"Vendas",value:dadosCidade.vendas.toLocaleString(),icon:"🧾",color:"#8b5cf6"},
                     {label:"Clientes Ativos",value:dadosCidade.clientesUnicos,icon:"👥",color:"#06b6d4"},
                     {label:"% Total Geral",value:((dadosCidade.valor/totalFat)*100).toFixed(1)+"%",icon:"📊",color:"#f59e0b"},
@@ -3546,7 +3699,7 @@ function CRMPeteca() {
                         const cor = (yearColors[anoNum] || ["#22c55e","#16a34a"]);
                         const altura = Math.max((d.valor/maxMesCid)*180, 2);
                         return (
-                          <div key={mes} title={`${mes.slice(5)}/${anoNum}: R$ ${d.valor.toLocaleString('pt-BR',{minimumFractionDigits:2})} (${d.count} vendas)`}
+                          <div key={mes} title={`${mes.slice(5)}/${anoNum}: R$ ${d.valor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} (${d.count} vendas)`}
                             style={{flex:"0 0 18px",height:altura,background:`linear-gradient(180deg,${cor[0]},${cor[1]})`,borderRadius:"2px 2px 0 0",cursor:"pointer"}}/>
                         );
                       })}
@@ -3684,7 +3837,7 @@ function CRMPeteca() {
                 )}
                 <PrintExportButtons 
                   onPrint={() => {
-                    const rows = cidadesFiltradas.map((c,i) => `<tr><td>${i+1}</td><td>${c.cidade}</td><td>${c.clientesUnicos}</td><td>${c.vendas}</td><td>R$ ${c.valor.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td></tr>`).join('');
+                    const rows = cidadesFiltradas.map((c,i) => `<tr><td>${i+1}</td><td>${c.cidade}</td><td>${c.clientesUnicos}</td><td>${c.vendas}</td><td>R$ ${c.valor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>`).join('');
                     printContent(`Ranking de Cidades (${cidadesFiltradas.length})`, `<table><thead><tr><th>#</th><th>Cidade</th><th>Clientes</th><th>Vendas</th><th>Faturamento</th></tr></thead><tbody>${rows}</tbody></table>`);
                   }}
                   onExport={() => {
@@ -3698,9 +3851,9 @@ function CRMPeteca() {
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:16,marginBottom:24}}>
                 {[
                   {label:"Cidades com Vendas",value:cidadesArr.length,icon:"🏙",color:"#3b82f6"},
-                  {label:"Faturamento Total",value:"R$ "+totalFat.toLocaleString('pt-BR',{minimumFractionDigits:2}),icon:"💰",color:"#22c55e"},
+                  {label:"Faturamento Total",value:"R$ "+totalFat.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),icon:"💰",color:"#22c55e"},
                   {label:"Cidade #1",value:cidadesArr[0]?.cidade || "—",icon:"🏆",color:"#f59e0b"},
-                  {label:"Ticket Médio",value:"R$ "+(totalFat/salesFilt.length).toLocaleString('pt-BR',{minimumFractionDigits:2}),icon:"🎯",color:"#8b5cf6"},
+                  {label:"Ticket Médio",value:"R$ "+(totalFat/salesFilt.length).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),icon:"🎯",color:"#8b5cf6"},
                 ].map((s,i) => (
                   <div key={i} style={{background:"var(--md-s3)",border:"1px solid var(--md-ov)",borderRadius:16,padding:"18px"}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:4}}>
@@ -3932,7 +4085,7 @@ function CRMPeteca() {
                 {/* KPIs do produto */}
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:16,marginBottom:24}}>
                   {[
-                    {label:"Faturamento",value:"R$ "+p.valor.toLocaleString('pt-BR',{minimumFractionDigits:2}),icon:"💰",color:"#22c55e"},
+                    {label:"Faturamento",value:"R$ "+p.valor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),icon:"💰",color:"#22c55e"},
                     {label:"Quantidade",value:p.qtde.toLocaleString('pt-BR',{maximumFractionDigits:2}),icon:"📊",color:"#3b82f6"},
                     {label:"Vendas",value:p.vendas.toLocaleString(),icon:"🧾",color:"#8b5cf6"},
                     {label:"Clientes",value:p.clientesUnicos,icon:"👥",color:"#06b6d4"},
@@ -3975,7 +4128,7 @@ function CRMPeteca() {
                         const cor = (yearColors[anoNum] || ["#22c55e","#16a34a"]);
                         const altura = Math.max((d.valor/maxMesP)*180, 2);
                         return (
-                          <div key={mes} title={`${mes.slice(5)}/${anoNum}: R$ ${d.valor.toLocaleString('pt-BR',{minimumFractionDigits:2})} (${d.qtde.toFixed(0)} un)`}
+                          <div key={mes} title={`${mes.slice(5)}/${anoNum}: R$ ${d.valor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} (${d.qtde.toFixed(0)} un)`}
                             style={{flex:"0 0 18px",height:altura,background:`linear-gradient(180deg,${cor[0]},${cor[1]})`,borderRadius:"2px 2px 0 0",cursor:"pointer"}}/>
                         );
                       })}
@@ -4094,7 +4247,7 @@ function CRMPeteca() {
                 )}
                 <PrintExportButtons 
                   onPrint={() => {
-                    const rows = prodsABC.map((p,i) => `<tr><td>${i+1}</td><td>${p.codigo}</td><td>${p.descricao}</td><td>${p.classe}</td><td>${p.vendas}</td><td>${p.qtde.toFixed(0)}</td><td>R$ ${p.valor.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td></tr>`).join('');
+                    const rows = prodsABC.map((p,i) => `<tr><td>${i+1}</td><td>${p.codigo}</td><td>${p.descricao}</td><td>${p.classe}</td><td>${p.vendas}</td><td>${p.qtde.toFixed(0)}</td><td>R$ ${p.valor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>`).join('');
                     printContent(`Produtos — Curva ABC (${prodsABC.length})`, `<table><thead><tr><th>#</th><th>Código</th><th>Produto</th><th>ABC</th><th>Vendas</th><th>Qtde</th><th>Faturamento</th></tr></thead><tbody>${rows}</tbody></table>`);
                   }}
                   onExport={() => {
@@ -4108,7 +4261,7 @@ function CRMPeteca() {
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:16,marginBottom:24}}>
                 {[
                   {label:"Produtos Distintos",value:prodsArr.length,icon:"📦",color:"#3b82f6"},
-                  {label:"Faturamento Total",value:"R$ "+totalFatProd.toLocaleString('pt-BR',{minimumFractionDigits:2}),icon:"💰",color:"#22c55e"},
+                  {label:"Faturamento Total",value:"R$ "+totalFatProd.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),icon:"💰",color:"#22c55e"},
                   {label:"Produto #1",value:prodsArr[0]?.descricao || "—",icon:"🏆",color:"#f59e0b"},
                   {label:"Curva A (até 80%)",value: prodsABC.filter(p=>p.classe==="A").length,icon:"⭐",color:"#ec4899"},
                 ].map((s,i) => (
@@ -4619,8 +4772,8 @@ function CRMPeteca() {
                 {/* KPIs do vendedor */}
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:16,marginBottom:24}}>
                   {[
-                    {label:"Faturamento",value:"R$ "+vd.valor.toLocaleString('pt-BR',{minimumFractionDigits:2}),icon:"💰",color:"#22c55e"},
-                    {label:"Ticket Médio",value:"R$ "+(vd.valor/vd.vendas).toLocaleString('pt-BR',{minimumFractionDigits:2}),icon:"🎯",color:"#3b82f6"},
+                    {label:"Faturamento",value:"R$ "+vd.valor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),icon:"💰",color:"#22c55e"},
+                    {label:"Ticket Médio",value:"R$ "+(vd.valor/vd.vendas).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),icon:"🎯",color:"#3b82f6"},
                     {label:"Vendas",value:vd.vendas.toLocaleString(),icon:"🧾",color:"#8b5cf6"},
                     {label:"Clientes",value:vd.clientesUnicos,icon:"👥",color:"#06b6d4"},
                     {label:"Cidades",value:vd.cidadesUnicas,icon:"🏙",color:"#f59e0b"},
@@ -4662,7 +4815,7 @@ function CRMPeteca() {
                         const cor = (yearColors[anoNum] || ["#22c55e","#16a34a"]);
                         const altura = Math.max((d.valor/maxMesV)*180, 2);
                         return (
-                          <div key={mes} title={`${mes.slice(5)}/${anoNum}: R$ ${d.valor.toLocaleString('pt-BR',{minimumFractionDigits:2})} (${d.count} vendas)`}
+                          <div key={mes} title={`${mes.slice(5)}/${anoNum}: R$ ${d.valor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} (${d.count} vendas)`}
                             style={{flex:"0 0 18px",height:altura,background:`linear-gradient(180deg,${cor[0]},${cor[1]})`,borderRadius:"2px 2px 0 0",cursor:"pointer"}}/>
                         );
                       })}
@@ -4834,9 +4987,9 @@ function CRMPeteca() {
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:16,marginBottom:24}}>
                 {[
                   {label:"Vendedores Ativos",value:vendArr.length,icon:"🏆",color:"#3b82f6"},
-                  {label:"Faturamento Total",value:"R$ "+totalFat.toLocaleString('pt-BR',{minimumFractionDigits:2}),icon:"💰",color:"#22c55e"},
+                  {label:"Faturamento Total",value:"R$ "+totalFat.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),icon:"💰",color:"#22c55e"},
                   {label:"Top #1",value:vendArr[0]?.nome || "—",icon:"⭐",color:"#f59e0b"},
-                  {label:"Ticket Médio Geral",value:"R$ "+(totalFat/salesFilt.length).toLocaleString('pt-BR',{minimumFractionDigits:2}),icon:"🎯",color:"#8b5cf6"},
+                  {label:"Ticket Médio Geral",value:"R$ "+(totalFat/salesFilt.length).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),icon:"🎯",color:"#8b5cf6"},
                 ].map((s,i) => (
                   <div key={i} style={{background:"var(--md-s3)",border:"1px solid var(--md-ov)",borderRadius:16,padding:"18px"}}>
                     <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
@@ -4859,7 +5012,7 @@ function CRMPeteca() {
                         const maxMesGlobal = Math.max(...mesesUnicos.map(m => vendArr.reduce((s,v) => s + (matrizComp[v.nome]?.[m] || 0), 0)));
                         const altura = Math.max((totalMes/maxMesGlobal)*220, 2);
                         return (
-                          <div key={mes} title={`${mes}: R$ ${totalMes.toLocaleString('pt-BR',{minimumFractionDigits:2})}`} style={{flex:"0 0 28px",display:"flex",flexDirection:"column-reverse",height:altura,cursor:"pointer"}}>
+                          <div key={mes} title={`${mes}: R$ ${totalMes.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}`} style={{flex:"0 0 28px",display:"flex",flexDirection:"column-reverse",height:altura,cursor:"pointer"}}>
                             {vendArr.slice(0,8).map((v,vi) => {
                               const valor = matrizComp[v.nome]?.[mes] || 0;
                               const alturaSeg = (valor/totalMes)*altura || 0;
@@ -4892,9 +5045,9 @@ function CRMPeteca() {
                     <div style={{fontSize:11,color:"var(--md-mut)"}}>{vendArr.length} vendedores</div>
                     <PrintExportButtons 
                       onPrint={() => {
-                        const rows = vendArr.map((v,i) => `<tr><td>${i+1}</td><td>${v.nome}</td><td>${v.vendas}</td><td>${v.clientesUnicos}</td><td>R$ ${v.valor.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td><td>${((v.valor/totalFat)*100).toFixed(1)}%</td></tr>`).join('');
+                        const rows = vendArr.map((v,i) => `<tr><td>${i+1}</td><td>${v.nome}</td><td>${v.vendas}</td><td>${v.clientesUnicos}</td><td>R$ ${v.valor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${((v.valor/totalFat)*100).toFixed(1)}%</td></tr>`).join('');
                         printContent(`Vendedores (${vendArr.length})`, `
-                          <div class="kpi-row"><div class="kpi"><div class="kpi-label">Faturamento Total</div><div class="kpi-value">R$ ${totalFat.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div></div></div>
+                          <div class="kpi-row"><div class="kpi"><div class="kpi-label">Faturamento Total</div><div class="kpi-value">R$ ${totalFat.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div></div></div>
                           <table><thead><tr><th>#</th><th>Vendedor</th><th>Vendas</th><th>Clientes</th><th>Faturamento</th><th>% Total</th></tr></thead><tbody>${rows}</tbody></table>`);
                       }}
                       onExport={() => {
@@ -5270,7 +5423,7 @@ function CRMPeteca() {
                     <button onClick={() => {setFluxoCidadeFiltro("");setFluxoVendedorFiltro("");setFluxoStatusFiltro([]);setFluxoSearch("");}} style={{padding:"7px 14px",borderRadius:12,border:"1px solid #5c2020",background:"#3b1111",color:"#f87171",fontSize:11,fontWeight:600,cursor:"pointer"}}>✕ Limpar filtros</button>
                   )}
                   <button onClick={() => {
-                    const rows = clientesFiltrados.slice(0, 200).map(c => `<tr><td>${c.nome}${c.isIde?' 🔗':''}</td><td>${c.cidade}</td><td>R$ ${c.total.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td><td>${c.vendas}</td><td>${c.diasSemCompra}d</td><td>${c.status}</td></tr>`).join('');
+                    const rows = clientesFiltrados.slice(0, 200).map(c => `<tr><td>${c.nome}${c.isIde?' 🔗':''}</td><td>${c.cidade}</td><td>R$ ${c.total.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${c.vendas}</td><td>${c.diasSemCompra}d</td><td>${c.status}</td></tr>`).join('');
                     printContent(`Fluxo de Vendas (${clientesFiltrados.length} clientes)`, `<table><thead><tr><th>Cliente</th><th>Cidade</th><th>Total</th><th>Vendas</th><th>Dias s/ Compra</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`);
                   }} style={{padding:"7px 14px",borderRadius:12,border:"1px solid var(--md-ol)",background:"var(--md-s5)",color:"var(--md-onv)",fontSize:11,fontWeight:600,cursor:"pointer"}}>🖨 Imprimir</button>
                   <button onClick={exportarCSV} style={{padding:"7px 14px",borderRadius:12,border:"1px solid var(--md-p45)",background:"var(--md-p50)",color:"#fff",fontSize:11,fontWeight:600,cursor:"pointer"}}>📥 Exportar CSV</button>
@@ -5320,7 +5473,7 @@ function CRMPeteca() {
                       const isPico = s.valor === maxSazonal;
                       return (
                         <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
-                          <div title={`${mesesNomes[i]}: R$ ${s.valor.toLocaleString('pt-BR',{minimumFractionDigits:2})} (${s.vendas} vendas)`}
+                          <div title={`${mesesNomes[i]}: R$ ${s.valor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} (${s.vendas} vendas)`}
                             style={{width:"100%",height:altura,background: isPico ? "linear-gradient(180deg,#fbbf24,#dc2626)" : "linear-gradient(180deg,#fbbf24,#f97316)",borderRadius:"4px 4px 0 0",cursor:"pointer",boxShadow: isPico ? "0 0 12px rgba(220,38,38,0.6)" : "none"}}/>
                           <div style={{fontSize:10,fontWeight:700,color: isPico ? "#dc2626" : "var(--md-onv)"}}>{mesesNomes[i]}</div>
                           <div style={{fontSize:9,color:"var(--md-mut)"}}>R${(s.valor/1000).toFixed(0)}k</div>
@@ -5424,7 +5577,7 @@ function CRMPeteca() {
                               return (
                                 <td key={m} onClick={dado ? () => setFluxoCelulaModal({cliente: c, mes: m, dado}) : undefined}
                                   style={{padding:0,borderLeft:"1px solid var(--md-s4)",height:48,minWidth:64,maxWidth:64,cursor:dado?"pointer":"default"}}>
-                                  <div title={dado ? `${m.slice(5)}/${m.slice(0,4)}: R$ ${valor.toLocaleString('pt-BR',{minimumFractionDigits:2})} (${dado.count} vendas) — Clique para detalhes` : `${m.slice(5)}/${m.slice(0,4)}: sem compras`}
+                                  <div title={dado ? `${m.slice(5)}/${m.slice(0,4)}: R$ ${valor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} (${dado.count} vendas) — Clique para detalhes` : `${m.slice(5)}/${m.slice(0,4)}: sem compras`}
                                     style={{width:"100%",height:"100%",background:cor,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
                                     {dado && (
                                       <>
@@ -5509,7 +5662,7 @@ function CRMPeteca() {
                     {/* Resumo do mês */}
                     <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:20}}>
                       <div style={{background:"var(--md-s1)",padding:14,borderRadius:14,textAlign:"center"}}>
-                        <div style={{fontSize:18,fontWeight:700,color:"#22c55e"}}>R$ {fluxoCelulaModal.dado.valor.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+                        <div style={{fontSize:18,fontWeight:700,color:"#22c55e"}}>R$ {fluxoCelulaModal.dado.valor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
                         <div style={{fontSize:10,color:"var(--md-mut)",textTransform:"uppercase",marginTop:2}}>Faturamento</div>
                       </div>
                       <div style={{background:"var(--md-s1)",padding:14,borderRadius:14,textAlign:"center"}}>
@@ -5517,7 +5670,7 @@ function CRMPeteca() {
                         <div style={{fontSize:10,color:"var(--md-mut)",textTransform:"uppercase",marginTop:2}}>Vendas</div>
                       </div>
                       <div style={{background:"var(--md-s1)",padding:14,borderRadius:14,textAlign:"center"}}>
-                        <div style={{fontSize:18,fontWeight:700,color:"#f59e0b"}}>R$ {(fluxoCelulaModal.dado.valor/fluxoCelulaModal.dado.count).toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+                        <div style={{fontSize:18,fontWeight:700,color:"#f59e0b"}}>R$ {(fluxoCelulaModal.dado.valor/fluxoCelulaModal.dado.count).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
                         <div style={{fontSize:10,color:"var(--md-mut)",textTransform:"uppercase",marginTop:2}}>Ticket Médio</div>
                       </div>
                     </div>
@@ -5532,7 +5685,7 @@ function CRMPeteca() {
                             <div style={{fontSize:11,color:"var(--md-mut)"}}>{v.dataDisplay || v.data}</div>
                             <div style={{fontSize:10,color:"var(--md-onv)",padding:"2px 8px",background:"var(--md-s5)",borderRadius:4}}>{v.condPagto}</div>
                             <div style={{fontSize:10,color:"var(--md-t75)"}}>{v.vendedor || "—"}</div>
-                            <div style={{fontSize:13,fontWeight:700,color:"#22c55e"}}>R$ {(v.valorLiquido || 0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+                            <div style={{fontSize:13,fontWeight:700,color:"#22c55e"}}>R$ {(v.valorLiquido || 0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
                           </div>
                           {(v.produtos || []).length > 0 && (
                             <div style={{paddingTop:6,borderTop:"1px dashed var(--md-ov)"}}>
@@ -5540,7 +5693,7 @@ function CRMPeteca() {
                                 <div key={pi} style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"var(--md-onv)",padding:"2px 0"}}>
                                   <span style={{flex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{p.descricao}</span>
                                   <span style={{color:"var(--md-mut)",margin:"0 8px"}}>{p.qtde}un</span>
-                                  <span style={{color:"#f59e0b",fontWeight:600}}>R$ {(p.vlrTotal || 0).toLocaleString('pt-BR',{minimumFractionDigits:2})}</span>
+                                  <span style={{color:"#f59e0b",fontWeight:600}}>R$ {(p.vlrTotal || 0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
                                 </div>
                               ))}
                             </div>
@@ -5603,7 +5756,7 @@ function CRMPeteca() {
           });
 
           const cidadesDisp = [...new Set(allSales.map(v => clienteToCidade[v.clienteId]).filter(Boolean))].sort();
-          const vendedoresDisp = filtrarVendedoresAtivos([...new Set(allSales.map(v => v.vendedor || "SEM VENDEDOR"))]).sort();
+          const vendedoresDisp = [...new Set([...filtrarVendedoresAtivos([...new Set(allSales.map(v => v.vendedor || "SEM VENDEDOR"))]), ...Object.values(carteira).map(x => x.vendedor)])].sort();
 
           // Construir clientes AGRUPADOS POR IDE
           const clienteMap = {};
@@ -5677,7 +5830,8 @@ function CRMPeteca() {
               
               // Vendedor principal histórico
               const vendOrd = Object.entries(c.vendedoresHist).sort(([,a],[,b]) => b - a);
-              const vendedorPrincipal = vendOrd[0]?.[0] || "—";
+              const donoCart = c.membros.map(m => (carteira[String(m)] || {}).vendedor).find(Boolean);
+              const vendedorPrincipal = donoCart || vendOrd[0]?.[0] || "—"; // v11: dono da carteira tem prioridade
               
               // Potencial perdido = ticket médio × frequência esperada × meses sem comprar
               // Frequência esperada = vendas / meses ativos
@@ -5685,8 +5839,9 @@ function CRMPeteca() {
               const mesesAtivos = c.primeiraCompra && c.ultimaCompra
                 ? Math.max(1, Math.ceil((new Date(c.ultimaCompra) - new Date(c.primeiraCompra)) / (86400000 * 30)))
                 : 1;
-              const freqMensal = c.vendas / mesesAtivos;
-              const mesesParado = Math.floor(dias / 30);
+              const freqMensal = c.vendas / Math.max(mesesAtivos, 6);
+              // v10: limita a 12 meses parado e usa no mínimo 6 meses de histórico (evita valores absurdos de quem comprou 1 vez)
+              const mesesParado = Math.min(12, Math.floor(dias / 30));
               const potencialPerdido = ticketMedio * freqMensal * mesesParado;
               
               return {
@@ -5774,18 +5929,18 @@ function CRMPeteca() {
                   </div>
                   <div style={{textAlign:"right"}}>
                     <div style={{fontSize:11,color:"var(--md-onv)"}}>POTENCIAL PERDIDO (Risco + Abandono)</div>
-                    <div style={{fontSize:22,fontWeight:700,color:"#ef4444"}}>R$ {totalPotencialPerdido.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+                    <div style={{fontSize:22,fontWeight:700,color:"#ef4444"}}>R$ {totalPotencialPerdido.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
                     <div style={{marginTop:8,display:"flex",gap:6,justifyContent:"flex-end"}}>
                       <button onClick={() => {
-                        const rows = clientesArr.map((c,i) => `<tr><td>${i+1}</td><td>${c.nome}${c.isIde?' 🔗':''}</td><td>${c.cidade}</td><td>${c.vendedorPrincipal}</td><td>${c.vendas}</td><td>R$ ${c.total.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td><td>${c.diasSemCompra}d</td><td>${c.status}</td><td>R$ ${c.potencialPerdido.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td></tr>`).join('');
+                        const rows = clientesArr.map((c,i) => `<tr><td>${i+1}</td><td>${c.nome}${c.isIde?' 🔗':''}</td><td>${c.cidade}</td><td>${c.vendedorPrincipal}</td><td>${c.vendas}</td><td>R$ ${c.total.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${c.diasSemCompra}d</td><td>${c.status}</td><td>R$ ${c.potencialPerdido.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</td></tr>`).join('');
                         printContent(`Abandono & Recuperação (${clientesArr.length})`, `
-                          <div class="kpi-row"><div class="kpi"><div class="kpi-label">Potencial Perdido</div><div class="kpi-value" style="color:#c00">R$ ${totalPotencialPerdido.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div></div></div>
+                          <div class="kpi-row"><div class="kpi"><div class="kpi-label">Potencial Perdido</div><div class="kpi-value" style="color:#c00">R$ ${totalPotencialPerdido.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div></div></div>
                           <table><thead><tr><th>#</th><th>Cliente</th><th>Cidade</th><th>Vendedor</th><th>Vendas</th><th>Total</th><th>Dias</th><th>Status</th><th>Potencial</th></tr></thead><tbody>${rows}</tbody></table>`);
-                      }} style={{padding:"5px 10px",background:"var(--md-s5)",border:"1px solid var(--md-ol)",borderRadius:5,color:"var(--md-onv)",fontSize:9,cursor:"pointer"}}>🖨</button>
+                      }} style={{padding:"0 16px",background:"var(--md-s5)",border:"1px solid var(--md-ol)",color:"var(--md-on)",fontSize:12,fontWeight:600,cursor:"pointer"}}>🖨 Imprimir</button>
                       <button onClick={() => {
                         exportCSV('abandono.csv',['#','Cliente','IDE','Cidade','Vendedor','Vendas','Total','Dias sem Compra','Status','Potencial Perdido'],
                           clientesArr.map((c,i) => [i+1, c.nome, c.code||'', c.cidade, c.vendedorPrincipal, c.vendas, c.total.toFixed(2), c.diasSemCompra, c.status, c.potencialPerdido.toFixed(2)]));
-                      }} style={{padding:"5px 10px",background:"var(--md-s5)",border:"1px solid var(--md-ol)",borderRadius:5,color:"var(--md-onv)",fontSize:9,cursor:"pointer"}}>📊</button>
+                      }} style={{padding:"0 16px",background:"var(--md-s5)",border:"1px solid var(--md-ol)",color:"var(--md-on)",fontSize:12,fontWeight:600,cursor:"pointer"}}>📊 Exportar CSV</button>
                     </div>
                   </div>
                 </div>
@@ -5871,7 +6026,7 @@ function CRMPeteca() {
                           <div style={{fontSize:13,fontWeight:700,color:"var(--md-on)"}}>{i<3?"🥇🥈🥉"[i]+" ":""}{r.vendedor}</div>
                           <div style={{fontSize:10,color:"#86efac",fontWeight:700,background:"rgba(34,197,94,0.2)",padding:"2px 6px",borderRadius:4}}>{r.recuperacoes}x</div>
                         </div>
-                        <div style={{fontSize:18,fontWeight:700,color:"#22c55e"}}>R$ {r.valor.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+                        <div style={{fontSize:18,fontWeight:700,color:"#22c55e"}}>R$ {r.valor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
                         <div style={{fontSize:10,color:"var(--md-mut)",marginTop:2}}>{r.clientesUnicos} clientes únicos recuperados</div>
                       </div>
                     ))}
@@ -6442,7 +6597,7 @@ function CRMPeteca() {
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1.5fr",gap:16,marginBottom:24}}>
                 <div style={{background:"var(--md-s3)",border:"1px solid var(--md-ov)",borderRadius:16,padding:"18px",textAlign:"center"}}>
                   <div style={{fontSize:10,color:"var(--md-mut)",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Faturamento Real</div>
-                  <div style={{fontSize:22,fontWeight:700,color:"#22c55e"}}>R$ {fatMes.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+                  <div style={{fontSize:22,fontWeight:700,color:"#22c55e"}}>R$ {fatMes.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
                 </div>
                 <div style={{background:"var(--md-s3)",border:"1px solid var(--md-ov)",borderRadius:16,padding:"18px",textAlign:"center"}}>
                   <div style={{fontSize:10,color:"var(--md-mut)",textTransform:"uppercase",letterSpacing:1,marginBottom:6}}>Vendas no Mês</div>
@@ -6499,12 +6654,12 @@ function CRMPeteca() {
                       const real = vendedorMes[vd]?.valor || 0;
                       const meta = metasVendedores[vd] || 0;
                       const pct = meta > 0 ? ((real/meta)*100).toFixed(1)+'%' : '—';
-                      return `<tr><td>${vd}</td><td>R$ ${real.toLocaleString('pt-BR',{minimumFractionDigits:2})}</td><td>${meta > 0 ? 'R$ '+meta.toLocaleString('pt-BR',{minimumFractionDigits:2}) : '—'}</td><td>${pct}</td><td>${vendedorMes[vd]?.vendas||0}</td><td>${vendedorMes[vd]?.clientes.size||0}</td></tr>`;
+                      return `<tr><td>${vd}</td><td>R$ ${real.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</td><td>${meta > 0 ? 'R$ '+meta.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'}</td><td>${pct}</td><td>${vendedorMes[vd]?.vendas||0}</td><td>${vendedorMes[vd]?.clientes.size||0}</td></tr>`;
                     }).join('');
                     printContent(`Metas & Desempenho — ${mesLabel}`, `
                       <div class="kpi-row">
-                        <div class="kpi"><div class="kpi-label">Faturamento Real</div><div class="kpi-value">R$ ${fatMes.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div></div>
-                        <div class="kpi"><div class="kpi-label">Meta Geral</div><div class="kpi-value">${metaGeral > 0 ? 'R$ '+metaGeral.toLocaleString('pt-BR',{minimumFractionDigits:2}) : 'Não definida'}</div></div>
+                        <div class="kpi"><div class="kpi-label">Faturamento Real</div><div class="kpi-value">R$ ${fatMes.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div></div>
+                        <div class="kpi"><div class="kpi-label">Meta Geral</div><div class="kpi-value">${metaGeral > 0 ? 'R$ '+metaGeral.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}) : 'Não definida'}</div></div>
                         <div class="kpi"><div class="kpi-label">Atingimento</div><div class="kpi-value">${metaGeral > 0 ? pctGeral.toFixed(1)+'%' : '—'}</div></div>
                       </div>
                       <div class="section">Desempenho por Vendedor</div>
@@ -6615,7 +6770,7 @@ function CRMPeteca() {
                     const isMesAtual = m === mesAtual;
                     
                     return (
-                      <div key={m} title={`${m.slice(5)}/${m.slice(0,4)}: R$ ${real.toLocaleString('pt-BR',{minimumFractionDigits:2})}${meta > 0 ? ` | Meta: R$ ${meta.toLocaleString('pt-BR')} (${((real/meta)*100).toFixed(0)}%)` : ''}`}
+                      <div key={m} title={`${m.slice(5)}/${m.slice(0,4)}: R$ ${real.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}${meta > 0 ? ` | Meta: R$ ${meta.toLocaleString('pt-BR')} (${((real/meta)*100).toFixed(0)}%)` : ''}`}
                         style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4,position:"relative",cursor:"pointer"}}
                         onClick={() => setMetasMesAtual(m)}>
                         
@@ -6667,6 +6822,18 @@ function CRMPeteca() {
         })()}
 
         {/* KANBANS TAB (ADMIN) */}
+        {tab === "cadastros" && (
+          <CadastrosTab clientes={clientes} getClientData={getClientData} mods={mods} saveMods={saveMods} vendas={vendas}
+            aliasClientes={aliasClientes} resolveAlias={resolveAlias} naoDup={naoDup} salvarNaoDup={salvarNaoDup}
+            mesclarGrupos={mesclarGrupos} mesclagens={mesclagens} desfazerMesclagem={desfazerMesclagem}
+            carteira={carteira} criarSnapshot={criarSnapshot} showToast={showToast} />
+        )}
+        {tab === "carteira" && (
+          <CarteiraTab clientes={clientes} getClientData={getClientData} vendas={vendas} aliasClientes={aliasClientes} resolveAlias={resolveAlias}
+            carteira={carteira} carteiraOk={carteiraOk} vendedoresAtivos={vendedoresAtivos} transferirClientes={transferirClientes}
+            carteiraConflOk={carteiraConflOk} salvarCarteiraConflOk={salvarCarteiraConflOk}
+            abrirClientes={(d) => { setTab('clientes'); setCarteiraFiltro(d); setStatusFiltro('TODOS'); setPage(0); }} showToast={showToast} />
+        )}
         {tab === "kanbans" && (() => {
           // Stats
           const ativos = kanbans.filter(k => String(k.finalizado).toLowerCase() !== 'sim');
@@ -6832,7 +6999,7 @@ function CRMPeteca() {
                             <div>
                               <div style={{fontSize:15,fontWeight:800,letterSpacing:-0.3}}>👤 {v.nome}</div>
                               <div style={{fontSize:11,color:"var(--md-onv)",marginTop:2}}>
-                                {v.total} clientes • R$ {v.potencial.toLocaleString('pt-BR',{minimumFractionDigits:2})} em jogo
+                                {v.total} clientes • R$ {v.potencial.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})} em jogo
                               </div>
                             </div>
                             <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
@@ -7063,6 +7230,15 @@ function CRMPeteca() {
                   </optgroup>
                 </select>
               </div>
+              <div style={{flex:"0 1 160px"}}>
+                <label style={{fontSize:11,color:"var(--md-mut)",display:"block",marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>Carteira</label>
+                <select value={carteiraFiltro} onChange={e => {setCarteiraFiltro(e.target.value);setPage(0);}}
+                  style={{width:"100%",padding:"10px 14px",background:"var(--md-s1)",border:"1px solid var(--md-ov)",borderRadius:12,color:"var(--md-on)",fontSize:13}}>
+                  <option value="TODAS">Todas</option>
+                  {[...vendedoresAtivos, 'EMPRESA'].map(v => <option key={v} value={v}>{v}</option>)}
+                  <option value="SEM">Sem dono</option>
+                </select>
+              </div>
               <div style={{flex:"0 1 150px"}}>
                 <label style={{fontSize:11,color:"var(--md-mut)",display:"block",marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>Status</label>
                 <select value={statusFiltro} onChange={e => {setStatusFiltro(e.target.value);setPage(0);}}
@@ -7145,7 +7321,7 @@ function CRMPeteca() {
                           checked={paged.length > 0 && paged.every(c => selClientes[c.i])}
                           onChange={e => setSelClientes(prev => { const n = {...prev}; paged.forEach(c => { if (e.target.checked) n[c.i] = true; else delete n[c.i]; }); return n; })} />
                       </th>
-                      {["ID","Nome","Cidade","Bairro","IDE",statusFiltro==="PENDENTES"?"Faturamento":"","Status","Ações"].filter(Boolean).map(h => (
+                      {["ID","Nome","Cidade","Carteira","IDE",statusFiltro==="PENDENTES"?"Faturamento":"","Status","Ações"].filter(Boolean).map(h => (
                         <th key={h} style={{padding:"12px 16px",textAlign:"left",fontSize:11,color:"var(--md-mut)",
                           textTransform:"uppercase",letterSpacing:1,borderBottom:"1px solid var(--md-ov)",whiteSpace:"nowrap"}}>{h}</th>
                       ))}
@@ -7187,7 +7363,7 @@ function CRMPeteca() {
                           <div style={{fontSize:11,color:"var(--md-mut)"}}>{c.r ? `${c.r}, ${c.nu}` : "Endereço não cadastrado"}</div>
                         </td>
                         <td style={{padding:"10px 16px",fontSize:12,color:"var(--md-onv)"}}>{c.c}</td>
-                        <td style={{padding:"10px 16px",fontSize:12,color:"var(--md-mut)"}}>{c.b}</td>
+                        <td style={{padding:"10px 16px",fontSize:12,color:(carteira[String(c.i)]||{}).vendedor==='EMPRESA'?"#fcd34d":"var(--md-onv)",fontWeight:600}}>{(carteira[String(c.i)]||{}).vendedor || <span style={{color:"var(--md-mut2)",fontWeight:400}}>—</span>}</td>
                         <td style={{padding:"10px 16px"}}>
                           {c.d ? (
                             <span style={{
@@ -7203,7 +7379,7 @@ function CRMPeteca() {
                         </td>
                         {statusFiltro === "PENDENTES" && (
                           <td style={{padding:"10px 16px",fontSize:12,fontWeight:700,color: fatCli > 0 ? "#22c55e" : "#ef4444"}}>
-                            {fatCli > 0 ? `R$ ${fatCli.toLocaleString('pt-BR',{minimumFractionDigits:2})}` : "R$ 0,00 ⚠"}
+                            {fatCli > 0 ? `R$ ${fatCli.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}` : "R$ 0,00 ⚠"}
                           </td>
                         )}
                         <td style={{padding:"10px 16px"}}>
@@ -7264,7 +7440,16 @@ function CRMPeteca() {
           boxShadow:"0 12px 40px rgba(0,0,0,0.55)",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",maxWidth:"calc(100vw - 280px)",animation:"slideUp .2s ease"}}>
           <span style={{fontSize:13,fontWeight:600,color:"var(--md-on)",marginRight:6,whiteSpace:"nowrap"}}>{selIds.length} selecionado{selIds.length>1?'s':''}</span>
           {loteRodando ? <span style={{fontSize:12,color:"var(--md-onv)",padding:"0 12px"}}>⏳ Processando...</span>
-          : loteIde !== null ? (
+          : loteTransf !== null ? (
+            <>
+              <select value={loteTransf} onChange={e => setLoteTransf(e.target.value)} style={{padding:"0 14px",background:"var(--md-s2)",border:"1px solid var(--md-ol)",color:"var(--md-on)"}}>
+                <option value="">Transferir para...</option>
+                {[...vendedoresAtivos, 'EMPRESA'].map(v => <option key={v} value={v}>{v}</option>)}
+              </select>
+              <button disabled={!loteTransf} onClick={async () => { setLoteRodando(true); try { await transferirClientes(selIds, loteTransf, 'Transferência em lote'); limparSelecao(); setLoteTransf(null); } finally { setLoteRodando(false); } }} style={{padding:"0 18px",background:"var(--md-pc)",border:"none",color:"var(--md-onpc)",fontSize:12,fontWeight:600}}>Aplicar</button>
+              <button onClick={() => setLoteTransf(null)} style={{padding:"0 14px",background:"transparent",border:"1px solid var(--md-ol)",color:"var(--md-onv)",fontSize:12}}>Voltar</button>
+            </>
+          ) : loteIde !== null ? (
             <>
               <input autoFocus list="lista-ides" value={loteIde} onChange={e => setLoteIde(e.target.value.toUpperCase())}
                 onKeyDown={e => { if (e.key === 'Enter') loteAplicarIde(loteIde); if (e.key === 'Escape') setLoteIde(null); }}
@@ -7287,6 +7472,7 @@ function CRMPeteca() {
             <>
               <button onClick={() => loteSetAtivo(0)} style={{padding:"0 16px",background:"color-mix(in srgb,#ef4444 14%,transparent)",border:"1px solid color-mix(in srgb,#ef4444 35%,transparent)",color:"#fca5a5",fontSize:12,fontWeight:600}}>📦 Inativar</button>
               <button onClick={() => loteSetAtivo(1)} style={{padding:"0 16px",background:"color-mix(in srgb,#22c55e 14%,transparent)",border:"1px solid color-mix(in srgb,#22c55e 35%,transparent)",color:"#86efac",fontSize:12,fontWeight:600}}>✅ Reativar</button>
+              <button onClick={() => setLoteTransf('')} style={{padding:"0 16px",background:"var(--md-pc)",border:"none",color:"var(--md-onpc)",fontSize:12,fontWeight:600}}>👤 Transferir</button>
               <button onClick={() => setLoteIde('')} style={{padding:"0 16px",background:"var(--md-pc)",border:"none",color:"var(--md-onpc)",fontSize:12,fontWeight:600}}>🔗 Grupo IDE</button>
               <button onClick={loteRemoverIde} style={{padding:"0 16px",background:"transparent",border:"1px solid var(--md-ol)",color:"var(--md-onv)",fontSize:12}}>Remover do IDE</button>
               <button onClick={() => setLoteConfirm('excluir1')} style={{padding:"0 16px",background:"transparent",border:"1px solid color-mix(in srgb,#ef4444 45%,transparent)",color:"#f87171",fontSize:12,fontWeight:600}}>🗑 Excluir</button>
@@ -7355,7 +7541,7 @@ function CRMPeteca() {
             {[
               {label:"Meses Importados",value:vendasStats.meses.length,icon:"📅",color:"#3b82f6"},
               {label:"Total de Vendas",value:vendasStats.totalVendas.toLocaleString(),icon:"🧾",color:"#22c55e"},
-              {label:"Faturamento Total",value:"R$ "+vendasStats.totalValor.toLocaleString('pt-BR',{minimumFractionDigits:2}),icon:"💰",color:"#f59e0b"},
+              {label:"Faturamento Total",value:"R$ "+vendasStats.totalValor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}),icon:"💰",color:"#f59e0b"},
             ].map((s,i) => (
               <div key={i} style={{background:"var(--md-s3)",border:"1px solid var(--md-ov)",borderRadius:16,padding:"20px"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
@@ -7388,7 +7574,7 @@ function CRMPeteca() {
                           style={{width:24,height:24,padding:0,background:"transparent",border:"none",color:"var(--md-mut)",fontSize:12,cursor:"pointer"}}>🗑</button>
                       </div>
                       <div style={{fontSize:11,color:"var(--md-mut)"}}>{count} vendas</div>
-                      <div style={{fontSize:11,color:"#22c55e"}}>R$ {valor.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+                      <div style={{fontSize:11,color:"#22c55e"}}>R$ {valor.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
                       {mesRemover === m && (
                         <div style={{display:"flex",flexDirection:"column",gap:4,marginTop:6}}>
                           <div style={{fontSize:10,color:"#fca5a5"}}>Apagar {count} vendas?</div>
@@ -7543,7 +7729,7 @@ function CRMPeteca() {
                           <td style={{padding:"8px 12px",color:"var(--md-onv)"}}>{v.vendedor}</td>
                           <td style={{padding:"8px 12px",color:"var(--md-mut)"}}>{v.condPagto}</td>
                           <td style={{padding:"8px 12px",color:"#22c55e",fontWeight:600,textAlign:"right"}}>
-                            {v.valorLiquido.toLocaleString('pt-BR',{minimumFractionDigits:2})}
+                            {v.valorLiquido.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}
                           </td>
                           <td style={{padding:"8px 12px",color:"var(--md-mut)"}}>{v.produtos.length} itens</td>
                         </tr>
@@ -7608,7 +7794,7 @@ function CRMPeteca() {
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:20}}>
               <div style={{background:"var(--md-s1)",borderRadius:12,padding:12,textAlign:"center"}}>
                 <div style={{fontSize:10,color:"var(--md-mut)",textTransform:"uppercase"}}>Faturamento</div>
-                <div style={{fontSize:18,fontWeight:700,color: fatCliente > 0 ? "#22c55e" : "#ef4444",marginTop:4}}>R$ {fatCliente.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+                <div style={{fontSize:18,fontWeight:700,color: fatCliente > 0 ? "#22c55e" : "#ef4444",marginTop:4}}>R$ {fatCliente.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
               </div>
               <div style={{background:"var(--md-s1)",borderRadius:12,padding:12,textAlign:"center"}}>
                 <div style={{fontSize:10,color:"var(--md-mut)",textTransform:"uppercase"}}>Vendas</div>
@@ -7656,6 +7842,11 @@ function CRMPeteca() {
                   <input value={selectedClient.nu || ""} onChange={e => setSelectedClient({...selectedClient, nu: e.target.value})}
                     style={{width:"100%",padding:"8px 10px",background:"var(--md-s3)",border:"1px solid var(--md-ov)",borderRadius:8,color:"var(--md-on)",fontSize:13}}/>
                 </div>
+                <div style={{gridColumn:"1 / -1"}}>
+                  <label style={{fontSize:10,color:"var(--md-mut)",display:"block",marginBottom:3}}>TELEFONE {selectedClient.cep ? `• CEP ${selectedClient.cep}` : ''}</label>
+                  <input value={selectedClient.t || ""} onChange={e => setSelectedClient({...selectedClient, t: e.target.value})} placeholder="(17) 99999-9999"
+                    style={{width:"100%",padding:"8px 10px",background:"var(--md-s3)",border:"1px solid var(--md-ov)",borderRadius:8,color:"var(--md-on)",fontSize:13}}/>
+                </div>
               </div>
               <button onClick={() => {
                 const newMods = {...mods};
@@ -7665,6 +7856,7 @@ function CRMPeteca() {
                 newMods[selectedClient.i].b = selectedClient.b;
                 newMods[selectedClient.i].r = selectedClient.r;
                 newMods[selectedClient.i].nu = selectedClient.nu;
+                newMods[selectedClient.i].t = selectedClient.t || '';
                 saveMods(newMods);
                 showToast(`✅ Dados de "${selectedClient.n}" atualizados!`);
               }} style={{
@@ -7672,6 +7864,8 @@ function CRMPeteca() {
                 border:"none",borderRadius:12,color:"#fff",fontSize:12,fontWeight:600,cursor:"pointer",width:"100%"
               }}>💾 Salvar Alterações</button>
             </div>
+
+            <CarteiraCliente clienteId={String(selectedClient.i)} carteira={carteira} vendedoresAtivos={vendedoresAtivos} transferirClientes={transferirClientes} />
 
             {/* IDE */}
             <div style={{background:"var(--md-s1)",borderRadius:14,padding:16,marginBottom:16}}>
@@ -7741,7 +7935,7 @@ function CRMPeteca() {
           String(k.cliente_id) === String(cli.i) && 
           String(k.finalizado).toLowerCase() !== 'sim'
         );
-        const fmt = n => 'R$ ' + Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2});
+        const fmt = n => 'R$ ' + Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
         
         return (
           <div onClick={() => setShowDeleteModal(null)} style={{
@@ -9657,7 +9851,7 @@ function EnviarKanbanModal({ cliente, onClose, onSuccess, onDuplicate, onError, 
         <div style={{background:"linear-gradient(135deg,color-mix(in srgb,var(--md-p55) 20%,transparent),color-mix(in srgb,var(--md-t60) 15%,transparent))",padding:"18px 22px",borderBottom:"1px solid color-mix(in srgb,var(--md-t60) 20%,transparent)"}}>
           <div style={{fontSize:11,color:"var(--md-t85)",letterSpacing:1.5,textTransform:"uppercase",fontWeight:700,marginBottom:4}}>🎱 Enviar ao Kanban</div>
           <div style={{fontSize:16,fontWeight:800,color:"var(--md-on)",letterSpacing:-0.3,marginBottom:2}}>{cliente.nome}</div>
-          <div style={{fontSize:11,color:"var(--md-onv)"}}>📍 {cliente.cidade || '—'} • {vendasCount} compras • R$ {fatHist.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+          <div style={{fontSize:11,color:"var(--md-onv)"}}>📍 {cliente.cidade || '—'} • {vendasCount} compras • R$ {fatHist.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
         </div>
         
         <div style={{padding:22}}>
@@ -9687,7 +9881,7 @@ function EnviarKanbanModal({ cliente, onClose, onSuccess, onDuplicate, onError, 
           </div>
           
           <div style={{padding:"10px 12px",background:"color-mix(in srgb,var(--md-t60) 8%,transparent)",border:"1px solid color-mix(in srgb,var(--md-t60) 20%,transparent)",borderRadius:12,fontSize:11,color:"var(--md-t85)",marginBottom:16,lineHeight:1.5}}>
-            💡 O vendedor verá esse cliente como bolinha no portal dele. O tamanho será proporcional ao potencial perdido ({potPerdido > 0 ? '≈ R$ ' + potPerdido.toLocaleString('pt-BR',{minimumFractionDigits:2}) : 'bolinha pequena - sem histórico'}).
+            💡 O vendedor verá esse cliente como bolinha no portal dele. O tamanho será proporcional ao potencial perdido ({potPerdido > 0 ? '≈ R$ ' + potPerdido.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}) : 'bolinha pequena - sem histórico'}).
           </div>
           
           <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
@@ -9974,7 +10168,7 @@ function AnalisarNovosClientesModal({ dados, clientes, getClientData, onCancelar
   
   const totalDecidido = Object.keys(decisoes).length;
   const todosDecididos = totalDecidido === novos.length;
-  const fmt = n => 'R$ ' + Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2});
+  const fmt = n => 'R$ ' + Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
   
   const confirmar = () => {
     const arr = novos.map(n => ({
@@ -10431,7 +10625,7 @@ function MergeManagerModal({ onClose, clientes, vendas, aliasClientes, salvarAli
 }
 
 function SugestaoLinha({ s, onAceitar, onIgnorar }) {
-  const fmt = n => 'R$ ' + Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2});
+  const fmt = n => 'R$ ' + Number(n||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
   const corScore = s.score === 100 ? '#22c55e' : s.score >= 90 ? '#84cc16' : s.score >= 80 ? '#eab308' : '#fb923c';
   
   return (
@@ -10642,6 +10836,589 @@ function GerenciarVendedoresModal({ onClose, showToast }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ============================================================
+// v11: CADASTROS — utilitários de normalização e detecção
+// ============================================================
+const cadNorm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+const CAD_SOCIETARIO = /\b(LTDA|ME|EPP|EIRELI|MEI|S A|SA|CIA|E|DE|DA|DO|DAS|DOS|EM|COM|COMERCIO|COMERCIAL|IND|INDUSTRIA|SERV|SERVICOS|EMPREENDIMENTOS?)\b/g;
+const CAD_GENERICOS = /\b(COMUNICACAO|COMUNICACA|COMUNICACOES|VISUAL|VISUAIS|GRAFICA|GRAF|BRINDES|ADESIVOS?|PUBLICIDADE|PROPAGANDA|TOLDOS?|IMPRESSAO|IMPRESSOES|DIGITAL|DESIGN|DESIGNER|ARTES?|ARTS|PAINEIS|LETREIROS?|SINALIZACAO|PLACAS|LUMINOSOS|ENVELOPAMENTO|SOLUCOES|STUDIO|PRINT|MARKETING|EDITORA|COPIADORA|FOTO|LETRAS)\b/g;
+const cadNomeBase = (s, cidade) => {
+  let t = ' ' + cadNorm(s).replace(/\d+/g, ' ') + ' ';
+  t = t.replace(CAD_SOCIETARIO, ' ');
+  cadNorm(cidade).split(' ').filter(w => w.length >= 4).forEach(w => { t = t.replace(new RegExp('\\b' + w + '\\b', 'g'), ' '); });
+  return t.replace(/\s+/g, ' ').trim();
+};
+const cadNucleo = (s, cidade) => cadNomeBase(s, cidade).replace(CAD_GENERICOS, ' ').replace(/\s+/g, ' ').trim();
+const cadDoc = s => { const m = String(s || '').match(/\d[\d.\-\/]{6,}\d/g) || []; for (const x of m) { const d = x.replace(/\D/g, ''); if (d.length >= 8) return d; } return ''; };
+const cadTel = t => { const d = String(t || '').replace(/\D/g, ''); return d.length >= 8 ? d.slice(-8) : ''; };
+const cadSim = (a, b) => {
+  if (!a || !b) return 0; if (a === b) return 1;
+  const m = a.length, n = b.length; let p = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) { const q = [i]; for (let j = 1; j <= n; j++) q[j] = Math.min(p[j] + 1, q[j - 1] + 1, p[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); p = q; }
+  return 1 - p[n] / Math.max(m, n);
+};
+const cadNomeLimpo = nc => { const s = String(nc || '').split(/\s{2,}/)[0].trim(); return /EMISS[AÃ]O|P[AÁ]GINA/i.test(s) || s.length < 2 ? '' : s; };
+const cadParKey = (a, b) => { const x = String(a), y = String(b); return x < y ? x + '|' + y : y + '|' + x; };
+const fmtD = d => d ? d.slice(8, 10) + '/' + d.slice(5, 7) + '/' + d.slice(0, 4) : '—';
+
+// Estatística de vendas por cliente (já resolvendo mesclagens)
+function cadStatsVendas(vendas, resolveAlias) {
+  const st = {};
+  Object.values(vendas).forEach(arr => (arr || []).forEach(v => {
+    if (!v.clienteId) return;
+    const orig = String(v.clienteId), id = String(resolveAlias(v.clienteId));
+    const s = st[id] = st[id] || { nv: 0, total: 0, ult: '', nomeRec: '', vendUlt: '', porOrig: {} };
+    s.nv++; s.total += v.valorLiquido || 0;
+    if ((v.data || '') > s.ult) { s.ult = v.data || ''; s.vendUlt = String(v.vendedor || '').toUpperCase().trim(); const nl = cadNomeLimpo(v.nomeCliente); if (nl) s.nomeRec = nl; }
+    const o = s.porOrig[orig] = s.porOrig[orig] || { nv: 0, ult: '', nome: '' };
+    o.nv++; if ((v.data || '') > o.ult) { o.ult = v.data || ''; const nl = cadNomeLimpo(v.nomeCliente); if (nl) o.nome = nl; }
+  }));
+  return st;
+}
+
+// Detecta grupos de prováveis duplicados
+function cadDetectar(lista, naoDup) {
+  const byId = {}; lista.forEach(c => byId[c.id] = c);
+  const pares = {};
+  const add = (a, b, pts, motivo) => {
+    if (a === b) return; const k = cadParKey(a, b); if (naoDup[k]) return;
+    const p = pares[k] = pares[k] || { a, b, pts: 0, motivos: [] };
+    if (!p.motivos.includes(motivo)) { p.motivos.push(motivo); p.pts += pts; }
+  };
+  const bucket = (fn, pts, motivo, maxTam) => {
+    const g = {}; lista.forEach(c => { const k = fn(c); if (k) (g[k] = g[k] || []).push(c.id); });
+    Object.values(g).forEach(ids => { if (ids.length < 2 || (maxTam && ids.length > maxTam)) return; for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) add(ids[i], ids[j], pts, motivo); });
+  };
+  bucket(c => c.doc, 100, 'CPF/CNPJ igual');
+  bucket(c => c.tel, 70, 'Mesmo telefone', 3);
+  // nome: mesma cidade OU um dos dois é pendente (sem cidade)
+  const porNome = (fn, pts, motivo) => {
+    const g = {}; lista.forEach(c => { const k = fn(c); if (k && k.length >= 3) (g[k] = g[k] || []).push(c); });
+    Object.values(g).forEach(cs => { if (cs.length < 2 || cs.length > 12) return; for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) { const A = cs[i], B = cs[j]; if (motivo === 'Nome quase igual' && A.base === B.base) continue; if (A.cidN === B.cidN || !A.cidN || !B.cidN) add(A.id, B.id, pts, motivo); } });
+  };
+  porNome(c => c.base, 70, 'Mesmo nome');
+  porNome(c => c.nucleo, 40, 'Nome quase igual');
+  bucket(c => c.endK, 40, 'Mesmo endereço');
+  bucket(c => c.ide, 50, 'Mesmo grupo IDE');
+  // nomes parecidos na mesma cidade
+  const porCid = {}; lista.forEach(c => (porCid[c.cidN] = porCid[c.cidN] || []).push(c));
+  Object.values(porCid).forEach(cs => {
+    for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) {
+      const A = cs[i], B = cs[j]; if (A.nucleo.length < 5 || B.nucleo.length < 5 || A.base === B.base) continue;
+      if (Math.abs(A.nucleo.length - B.nucleo.length) > 6) continue;
+      const s = cadSim(A.nucleo, B.nucleo); if (s >= 0.88) add(A.id, B.id, 35, `Nome parecido (${Math.round(s * 100)}%)`);
+    }
+  });
+  // penaliza cidades diferentes (exceto documento)
+  const validos = Object.values(pares).map(p => {
+    const A = byId[p.a], B = byId[p.b];
+    let pts = p.pts; if (A.cidN && B.cidN && A.cidN !== B.cidN && !p.motivos.includes('CPF/CNPJ igual')) { pts -= 30; p.motivos.push('Cidades diferentes'); }
+    if (!A.cidN || !B.cidN) p.motivos.push('Cadastro pendente');
+    return { ...p, score: Math.max(0, Math.min(100, pts)) };
+  }).filter(p => p.score >= 50);
+  // pares FORTES = documento igual, ou evidência de nome + outra pista (telefone/endereço/IDE)
+  const qtdBase = {}; lista.forEach(c => { if (c.base) qtdBase[c.base] = (qtdBase[c.base] || 0) + 1; });
+  validos.forEach(p => {
+    const temNome = p.motivos.includes('Mesmo nome') || p.motivos.includes('Nome quase igual');
+    // pendente com nome idêntico a UM único cadastro real também é certeza
+    const pendUnico = p.motivos.includes('Mesmo nome') && p.motivos.includes('Cadastro pendente') && qtdBase[byId[p.a].base] === 2;
+    p.forte = p.motivos.includes('CPF/CNPJ igual') || (temNome && p.score >= 100) || pendUnico;
+  });
+  const agrupar = (pares) => {
+    const pai = {}; const f = x => (pai[x] === undefined || pai[x] === x) ? (pai[x] = x) : (pai[x] = f(pai[x]));
+    pares.forEach(p => { pai[f(p.a)] = f(p.b); });
+    const g = {};
+    pares.forEach(p => { const r = f(p.a); const x = g[r] = g[r] || { ids: new Set(), score: 0, motivos: new Set(), pares: [] }; x.ids.add(p.a); x.ids.add(p.b); x.score = Math.max(x.score, p.score); p.motivos.forEach(m => x.motivos.add(m)); x.pares.push(p); });
+    return Object.values(g);
+  };
+  const montar = (g, certeza) => {
+    const membros = [...g.ids].map(id => byId[id]).sort((x, y) => (y.ult || '').localeCompare(x.ult || '') || Number(y.id) - Number(x.id));
+    return { key: membros.map(m => m.id).sort().join('-'), membros, score: g.score, motivos: [...g.motivos], pares: g.pares, certeza };
+  };
+  // 1) certeza: componentes só de pares fortes (até 8 cadastros)
+  const certos = agrupar(validos.filter(p => p.forte)).filter(g => g.ids.size <= 8);
+  const emCerteza = new Set(); certos.forEach(g => g.ids.forEach(id => emCerteza.add(id)));
+  // 2) revisão: demais pares (quem está num grupo de certeza espera a mesclagem para ser reavaliado)
+  const revis = agrupar(validos.filter(p => !emCerteza.has(p.a) && !emCerteza.has(p.b)));
+  return [...certos.map(g => montar(g, true)), ...revis.map(g => montar(g, false))]
+    .sort((a, b) => b.score - a.score || b.membros.length - a.membros.length);
+}
+
+// ============================================================
+// v11: ABA CADASTROS (Duplicados • Atualizar pelo ERP • Mesclagens)
+// ============================================================
+function CadastrosTab(props) {
+  const [sub, setSub] = useState('duplicados');
+  const tabs = [['duplicados', '🧬 Duplicados'], ['erp', '⬇ Atualizar pelo ERP'], ['mesclagens', '↩ Mesclagens feitas (' + (props.mesclagens || []).length + ')']];
+  return (
+    <div style={{ animation: 'fadeIn .3s ease' }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
+        {tabs.map(([k, l]) => (
+          <button key={k} onClick={() => setSub(k)} style={{ padding: '0 20px', background: sub === k ? 'var(--md-pc)' : 'transparent', border: sub === k ? 'none' : '1px solid var(--md-ol)', color: sub === k ? 'var(--md-onpc)' : 'var(--md-onv)', fontSize: 13, fontWeight: 600 }}>{l}</button>
+        ))}
+      </div>
+      {sub === 'duplicados' && <CentralDuplicados {...props} />}
+      {sub === 'erp' && <AtualizarPeloERP {...props} />}
+      {sub === 'mesclagens' && <MesclagensFeitas {...props} />}
+    </div>
+  );
+}
+
+function CentralDuplicados({ clientes, getClientData, mods, vendas, aliasClientes, resolveAlias, naoDup, salvarNaoDup, mesclarGrupos, carteira, showToast }) {
+  const [idx, setIdx] = useState(0);
+  const [principalSel, setPrincipalSel] = useState({});
+  const [loteSel, setLoteSel] = useState(null); // {key: true}
+  const [rodando, setRodando] = useState(false);
+  const stats = useMemo(() => cadStatsVendas(vendas, resolveAlias), [vendas, resolveAlias]);
+  const lista = useMemo(() => clientes
+    .filter(c => !aliasClientes[String(c.i)])
+    .map(c => getClientData(c))
+    .filter(c => c.a !== 0)
+    .map(c => {
+      const m = mods[c.i] || {}; const s = stats[String(c.i)] || {};
+      const cid = c.c === 'CADASTRO PENDENTE' ? '' : c.c;
+      return {
+        id: String(c.i), n: c.n, c: c.c, cidN: cadNorm(cid), r: c.r, nu: c.nu, b: c.b, t: m.t || '', d: c.d || '',
+        doc: cadDoc(c.n), tel: cadTel(m.t), base: cadNomeBase(c.n, cid), nucleo: cadNucleo(c.n, cid),
+        endK: (c.r && c.nu && String(c.nu).replace(/\D/g, '') && cid) ? cadNorm(c.r).replace(/\b(R|RUA|AV|AVENIDA|AL|ALAMEDA|TV|TRAV)\b/g, '').trim() + '|' + String(c.nu).replace(/\D/g, '') + '|' + cadNorm(cid) : '',
+        ide: c.d || '', nv: s.nv || 0, total: s.total || 0, ult: s.ult || '', nomeRec: s.nomeRec || '',
+        dono: (carteira[String(c.i)] || {}).vendedor || ''
+      };
+    }), [clientes, getClientData, mods, stats, aliasClientes, carteira]);
+  const grupos = useMemo(() => cadDetectar(lista, naoDup), [lista, naoDup]);
+  const certeza = grupos.filter(g => g.certeza);
+  const revisar = grupos.filter(g => !g.certeza);
+  const atual = revisar[Math.min(idx, Math.max(0, revisar.length - 1))];
+
+  const [fora, setFora] = useState({}); // {grupoKey: {id: true}} — tirar cadastro do grupo
+  const incluidos = g => g.membros.filter(m => !(fora[g.key] || {})[m.id]);
+  const principalDe = g => { const inc = incluidos(g); const p = principalSel[g.key]; return (p && inc.some(m => m.id === p)) ? p : (inc[0] || g.membros[0]).id; };
+  const nomeFinalDe = (g, pid) => { const p = g.membros.find(m => m.id === pid) || g.membros[0]; const maisRecente = [...g.membros].sort((x, y) => (y.ult || '').localeCompare(x.ult || ''))[0]; return (maisRecente && maisRecente.nomeRec) || p.n; };
+
+  const mesclar = async (gs) => {
+    setRodando(true);
+    try {
+      // quem foi tirado do grupo é marcado como "diferente" dos demais
+      const nd = { ...naoDup }; let mudouNd = false;
+      gs.forEach(g => { const tirados = g.membros.filter(m => (fora[g.key] || {})[m.id]); const inc = incluidos(g); tirados.forEach(t => inc.forEach(i => { nd[cadParKey(t.id, i.id)] = 1; mudouNd = true; })); });
+      if (mudouNd) await salvarNaoDup(nd);
+      const validosG = gs.filter(g => incluidos(g).length >= 2);
+      if (validosG.length) await mesclarGrupos(validosG.map(g => { const pid = principalDe(g); const inc = incluidos(g); return { principal: pid, membros: inc.map(m => m.id), nomeFinal: nomeFinalDe({ ...g, membros: inc }, pid), motivos: g.motivos }; }));
+    } finally { setRodando(false); }
+  };
+  const naoSao = async (g) => {
+    const n = { ...naoDup }; g.membros.forEach((a, i) => g.membros.slice(i + 1).forEach(b => { n[cadParKey(a.id, b.id)] = 1; }));
+    await salvarNaoDup(n); showToast('✓ Marcado como cadastros diferentes — não vai aparecer de novo');
+  };
+
+  // atalhos de teclado
+  useEffect(() => {
+    const h = (e) => {
+      if (!atual || rodando || ['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target.tagName || ''))) return;
+      const k = e.key.toLowerCase();
+      if (k === 'm') { e.preventDefault(); mesclar([atual]); }
+      else if (k === 'n') { e.preventDefault(); naoSao(atual); }
+      else if (k === 'arrowright') { e.preventDefault(); setIdx(i => Math.min(i + 1, revisar.length - 1)); }
+      else if (k === 'arrowleft') { e.preventDefault(); setIdx(i => Math.max(0, i - 1)); }
+    };
+    window.addEventListener('keydown', h); return () => window.removeEventListener('keydown', h);
+  });
+
+  const card = { background: 'var(--md-s3)', border: '1px solid var(--md-ov)', borderRadius: 24, padding: 20, marginBottom: 16 };
+  const chip = (txt, cor) => <span key={txt} style={{ padding: '3px 10px', borderRadius: 999, fontSize: 11, fontWeight: 600, background: `color-mix(in srgb,${cor} 16%,transparent)`, color: cor, border: `1px solid color-mix(in srgb,${cor} 35%,transparent)` }}>{txt}</span>;
+  const corMotivo = m => m.startsWith('CPF') || m.startsWith('Mesmo telefone') || m === 'Mesmo nome' ? '#4ade80' : m.startsWith('Cidades') ? '#f87171' : '#fcd34d';
+
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: 12, marginBottom: 16 }}>
+        {[['Casos de certeza', certeza.length, '#4ade80'], ['Para revisar', revisar.length, '#fcd34d'], ['Clientes analisados', lista.length, 'var(--md-p75)'], ['Marcados como diferentes', Object.keys(naoDup).length, 'var(--md-onv)']].map(([l, v, c]) => (
+          <div key={l} style={{ background: 'var(--md-s3)', border: '1px solid var(--md-ov)', borderRadius: 20, padding: '16px 18px' }}>
+            <div style={{ fontSize: 11, color: 'var(--md-mut)', textTransform: 'uppercase', letterSpacing: 1 }}>{l}</div>
+            <div style={{ fontSize: 26, fontWeight: 700, color: c, marginTop: 4 }}>{v}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* LOTE DE CERTEZA */}
+      {certeza.length > 0 && (
+        <div style={card}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--md-on)' }}>🟢 {certeza.length} casos de certeza</div>
+              <div style={{ fontSize: 12, color: 'var(--md-mut)', marginTop: 2 }}>Documento igual, ou telefone/endereço/grupo + mesmo nome. Fica o cadastro com a compra mais recente e o nome mais recente.</div>
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => setLoteSel(loteSel ? null : Object.fromEntries(certeza.map(g => [g.key, true])))} style={{ padding: '0 16px', background: 'transparent', border: '1px solid var(--md-ol)', color: 'var(--md-onv)', fontSize: 12 }}>{loteSel ? 'Fechar lista' : 'Ver lista'}</button>
+              <button disabled={rodando} onClick={() => mesclar(certeza.filter(g => !loteSel || loteSel[g.key]))} style={{ padding: '0 20px', background: 'var(--md-pc)', border: 'none', color: 'var(--md-onpc)', fontSize: 13, fontWeight: 600 }}>
+                {rodando ? 'Mesclando...' : `Mesclar ${loteSel ? Object.values(loteSel).filter(Boolean).length : certeza.length}`}
+              </button>
+            </div>
+          </div>
+          {loteSel && (
+            <div style={{ marginTop: 14, maxHeight: 360, overflowY: 'auto', borderTop: '1px solid var(--md-ov)' }}>
+              {certeza.map(g => (
+                <label key={g.key} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '10px 0', borderBottom: '1px solid var(--md-ov)', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={!!loteSel[g.key]} onChange={() => setLoteSel(s => ({ ...s, [g.key]: !s[g.key] }))} />
+                  <div style={{ fontSize: 12, flex: 1 }}>
+                    <div style={{ color: 'var(--md-on)', fontWeight: 600 }}>✓ {nomeFinalDe(g, principalDe(g))} <span style={{ color: 'var(--md-mut)', fontWeight: 400 }}>• fica #{principalDe(g)}</span></div>
+                    <div style={{ color: 'var(--md-mut)', marginTop: 2 }}>{g.membros.map(m => `#${m.id} ${m.n} (${m.nv}v)`).join('  +  ')}</div>
+                    <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap' }}>{g.motivos.map(m => chip(m, corMotivo(m)))}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* FILA DE REVISÃO */}
+      {!atual ? (
+        <div style={{ ...card, textAlign: 'center', padding: 40 }}>
+          <div style={{ fontSize: 40 }}>🎉</div>
+          <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--md-on)', marginTop: 8 }}>Nenhum caso para revisar</div>
+          <div style={{ fontSize: 12, color: 'var(--md-mut)', marginTop: 4 }}>Sua base está sem duplicados prováveis.</div>
+        </div>
+      ) : (
+        <div style={card}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, gap: 10, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--md-on)' }}>Revisão {Math.min(idx, revisar.length - 1) + 1} de {revisar.length} <span style={{ fontSize: 12, color: 'var(--md-mut)', fontWeight: 400 }}>• semelhança {atual.score}%</span></div>
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>{atual.motivos.map(m => chip(m, corMotivo(m)))}</div>
+          </div>
+          <div style={{ height: 4, borderRadius: 4, background: 'var(--md-s5)', marginBottom: 16, overflow: 'hidden' }}><div style={{ height: '100%', width: `${(Math.min(idx, revisar.length - 1) + 1) / revisar.length * 100}%`, background: 'var(--md-p55)' }}></div></div>
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(atual.membros.length, 4)},minmax(0,1fr))`, gap: 10 }}>
+            {atual.membros.map(m => {
+              const sel = principalDe(atual) === m.id; const tirado = (fora[atual.key] || {})[m.id];
+              return (
+                <div key={m.id} onClick={() => !tirado && setPrincipalSel(s => ({ ...s, [atual.key]: m.id }))} style={{ cursor: tirado ? 'default' : 'pointer', opacity: tirado ? 0.45 : 1, padding: 14, borderRadius: 18, background: sel ? 'color-mix(in srgb,var(--md-p55) 14%,transparent)' : 'var(--md-s2)', border: sel ? '2px solid var(--md-p55)' : '2px solid transparent' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: sel ? 'var(--md-p75)' : 'var(--md-mut)', letterSpacing: 1 }}>{tirado ? 'FORA DO GRUPO' : sel ? '★ FICA ESTE' : 'clique para manter este'}</div>
+                    {atual.membros.length > 2 || tirado ? (
+                      <button className="md-icon" onClick={e => { e.stopPropagation(); setFora(f => ({ ...f, [atual.key]: { ...(f[atual.key] || {}), [m.id]: !tirado } })); }} title={tirado ? 'Voltar para o grupo' : 'Não é o mesmo cliente — tirar deste grupo'}
+                        style={{ minHeight: 24, padding: '0 8px', background: 'transparent', border: '1px solid var(--md-ol)', color: 'var(--md-onv)', fontSize: 10 }}>{tirado ? '↩ voltar' : '✕ tirar'}</button>
+                    ) : null}
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--md-on)', marginTop: 4 }}>{m.n}</div>
+                  <div style={{ fontSize: 11, color: 'var(--md-mut)', marginTop: 6, lineHeight: 1.6 }}>
+                    #{m.id} • {m.c || '—'}<br />
+                    {m.r ? `${m.r}, ${m.nu || ''}` : 'sem endereço'}{m.b ? ' - ' + m.b : ''}<br />
+                    📞 {m.t || '—'}<br />
+                    🧾 {m.nv} vendas • últ. {fmtD(m.ult)}<br />
+                    👤 {m.dono || 'sem dono'}{m.d ? ' • ' + m.d : ''}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--md-onv)', marginTop: 12 }}>Nome que fica: <b style={{ color: 'var(--md-on)' }}>{nomeFinalDe({ ...atual, membros: incluidos(atual) }, principalDe(atual))}</b> <span style={{ color: 'var(--md-mut)' }}>(o mais recente usado nas vendas)</span></div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
+            <button disabled={rodando} onClick={() => mesclar([atual])} style={{ padding: '0 22px', background: 'var(--md-pc)', border: 'none', color: 'var(--md-onpc)', fontSize: 13, fontWeight: 600 }}>🔗 Mesclar <kbd style={{ opacity: .6, marginLeft: 6 }}>M</kbd></button>
+            <button onClick={() => naoSao(atual)} style={{ padding: '0 20px', background: 'transparent', border: '1px solid var(--md-ol)', color: 'var(--md-on)', fontSize: 13 }}>✋ São diferentes <kbd style={{ opacity: .6, marginLeft: 6 }}>N</kbd></button>
+            <div style={{ flex: 1 }}></div>
+            <button onClick={() => setIdx(i => Math.max(0, i - 1))} style={{ padding: '0 16px', background: 'transparent', border: '1px solid var(--md-ov)', color: 'var(--md-onv)', fontSize: 13 }}>←</button>
+            <button onClick={() => setIdx(i => Math.min(i + 1, revisar.length - 1))} style={{ padding: '0 16px', background: 'transparent', border: '1px solid var(--md-ov)', color: 'var(--md-onv)', fontSize: 13 }}>Pular →</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MesclagensFeitas({ mesclagens, desfazerMesclagem }) {
+  const [conf, setConf] = useState(null);
+  const lista = [...(mesclagens || [])].reverse();
+  return (
+    <div style={{ background: 'var(--md-s3)', border: '1px solid var(--md-ov)', borderRadius: 24, padding: 20 }}>
+      <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--md-on)', marginBottom: 4 }}>↩ Mesclagens feitas</div>
+      <div style={{ fontSize: 12, color: 'var(--md-mut)', marginBottom: 14 }}>Desfazer separa os cadastros de novo: as vendas voltam para o ID original.</div>
+      {!lista.length && <div style={{ fontSize: 13, color: 'var(--md-mut)', padding: 20, textAlign: 'center' }}>Nenhuma mesclagem ainda.</div>}
+      {lista.map(m => (
+        <div key={m.id} style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '10px 0', borderBottom: '1px solid var(--md-ov)', fontSize: 12 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ color: 'var(--md-on)', fontWeight: 600 }}>#{m.principal} {m.nomeFinal}</div>
+            <div style={{ color: 'var(--md-mut)', marginTop: 2 }}>absorveu {m.outros.map(o => '#' + o).join(', ')} • {new Date(m.em).toLocaleString('pt-BR')} • {m.por}</div>
+          </div>
+          {conf === m.id ? (
+            <>
+              <button onClick={() => setConf(null)} style={{ padding: '0 14px', minHeight: 34, background: 'transparent', border: '1px solid var(--md-ol)', color: 'var(--md-onv)', fontSize: 11 }}>Não</button>
+              <button onClick={() => { setConf(null); desfazerMesclagem(m.id); }} style={{ padding: '0 14px', minHeight: 34, background: '#dc2626', border: 'none', color: '#fff', fontSize: 11, fontWeight: 700 }}>Desfazer</button>
+            </>
+          ) : <button onClick={() => setConf(m.id)} style={{ padding: '0 14px', minHeight: 34, background: 'transparent', border: '1px solid var(--md-ol)', color: '#fcd34d', fontSize: 11 }}>↩ Desfazer</button>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------- leitor do relatório "Cliente/Vendedor" do ERP ----------
+function cadParseRelatorioClientes(texto) {
+  const txt = texto.replace(/^﻿/, '').split(/\r?\n/).slice(1).map(l => { const i = l.indexOf(';'); return (i >= 0 ? l.slice(i + 1) : l).trim(); });
+  const RE_CLI = /^(\d{5,6})\s+(?:-\s+)?(.+?)\s{2,}(.+?)\s*\/\s*([A-Z]{2})(?:\s{2,}(.*))?$/;
+  const RE_LOOSE = /^(\d{5,6})\s+(?:-\s+)?(.+?)\s*\/\s*([A-Z]{2})(?:\s+(\(.*))?$/;
+  const RE_END = /^(.*?)\s*-?\s*CEP\s*(\d{8})?\s*(\d{2}\/\d{2}\/\d{2})\s+(\d{2}\/\d{2}\/\d{2})\s*$/;
+  const cidades = new Set();
+  txt.forEach(t => { const m = t.match(RE_CLI); if (m) cidades.add(m[3].trim()); if (t.startsWith('Cidade:') && t.slice(7).trim()) cidades.add(t.slice(7).trim()); });
+  const cidOrd = [...cidades].sort((a, b) => b.length - a.length);
+  const out = []; let vend = null, prev = '';
+  const data = s => { const [d, m, a] = s.split('/'); return (Number(a) > 50 ? '19' : '20') + a + '-' + m + '-' + d; };
+  for (let i = 0; i < txt.length; i++) {
+    const t = txt[i];
+    if (t.startsWith('Vendedor:')) { const v = t.slice(9).trim(); vend = v || (prev && !prev.startsWith('Total') ? prev : vend); }
+    let c = null; const m = t.match(RE_CLI);
+    if (m && cidades.has(m[3].trim())) c = { i: Number(m[1]), n: m[2].trim(), cid: m[3].trim(), uf: m[4], tel: (m[5] || '').trim(), vend };
+    if (!c) { const ml = t.match(RE_LOOSE); if (ml) { const corpo = ml[2].trim(); const cd = cidOrd.find(x => corpo.endsWith(' ' + x)); if (cd) c = { i: Number(ml[1]), n: corpo.slice(0, -cd.length).trim(), cid: cd, uf: ml[3], tel: (ml[4] || '').trim(), vend }; } }
+    if (c) {
+      for (let j = i + 1; j < Math.min(txt.length, i + 4); j++) {
+        const e = txt[j].match(RE_END);
+        if (e) {
+          const end = e[1].trim().replace(/-$/, '').trim();
+          const me = end.match(/^(.*?),\s*([^,]*?)\s*-\s*(.*)$/);
+          c.rua = me ? me[1].trim() : end.split(' - ')[0].trim(); c.num = me ? me[2].trim() : ''; c.bairro = me ? me[3].trim() : (end.split(' - ')[1] || '').trim();
+          c.cep = e[2] || ''; c.cad = data(e[3]); c.ult = e[4] === '30/12/99' ? '' : data(e[4]);
+          break;
+        }
+      }
+      out.push(c);
+    }
+    if (t && !t.startsWith('Cidade') && !t.startsWith('Vendedor')) prev = t;
+  }
+  return out;
+}
+
+function AtualizarPeloERP({ clientes, getClientData, mods, saveMods, criarSnapshot, showToast }) {
+  const [dados, setDados] = useState(null);
+  const [sobrescrever, setSobrescrever] = useState(false);
+  const [aplicando, setAplicando] = useState(false);
+  const inputRef = useRef(null);
+  const ler = (file) => {
+    const fr = new FileReader();
+    fr.onload = () => {
+      try { const lista = cadParseRelatorioClientes(fr.result); if (!lista.length) throw new Error('Nenhum cliente encontrado. Use o relatório "Cliente/Vendedor" salvo como CSV.'); setDados(lista); }
+      catch (e) { showToast(e.message, 'error'); }
+    };
+    fr.readAsText(file, 'utf-8');
+  };
+  // cidade no padrão já usado no CRM (com acentos)
+  const grafiaCidade = useMemo(() => {
+    const cont = {}; clientes.forEach(c => { const d = getClientData(c); if (d.c && d.c !== 'CADASTRO PENDENTE') { const k = cadNorm(d.c); cont[k] = cont[k] || {}; cont[k][d.c] = (cont[k][d.c] || 0) + 1; } });
+    const m = {}; Object.entries(cont).forEach(([k, v]) => { m[k] = Object.entries(v).sort((a, b) => b[1] - a[1])[0][0]; }); return m;
+  }, [clientes, getClientData]);
+  const plano = useMemo(() => {
+    if (!dados) return null;
+    const E = {}; dados.forEach(c => E[c.i] = c);
+    const r = { encontrados: 0, pendentes: 0, enderecos: 0, telefones: 0, cep: 0, foraDoErp: 0, ignorados: 0, mudancas: {} };
+    const idsCrm = new Set(clientes.map(c => Number(c.i)));
+    dados.forEach(c => { if (!idsCrm.has(c.i)) r.ignorados++; });
+    clientes.forEach(cl => {
+      const e = E[Number(cl.i)]; if (!e) { r.foraDoErp++; return; }
+      r.encontrados++;
+      const d = getClientData(cl); const m = mods[cl.i] || {}; const ch = {};
+      const pend = !d.c || d.c === 'CADASTRO PENDENTE'; const semEnd = !d.r;
+      if (e.rua && (pend || semEnd || sobrescrever)) {
+        const cid = grafiaCidade[cadNorm(e.cid)] || e.cid;
+        if (d.c !== cid) ch.c = cid; if (d.r !== e.rua) ch.r = e.rua; if (String(d.nu || '') !== e.num) ch.nu = e.num; if (d.b !== e.bairro) ch.b = e.bairro;
+        if (Object.keys(ch).length) { if (pend) r.pendentes++; else r.enderecos++; }
+      }
+      if (e.tel && m.t !== e.tel) { ch.t = e.tel; r.telefones++; }
+      if (e.cep && m.cep !== e.cep) { ch.cep = e.cep; r.cep++; }
+      if (e.cad && m.dc !== e.cad) ch.dc = e.cad;
+      if (e.ult && m.du !== e.ult) ch.du = e.ult;
+      if (Object.keys(ch).length) r.mudancas[cl.i] = ch;
+    });
+    return r;
+  }, [dados, clientes, getClientData, mods, sobrescrever, grafiaCidade]);
+  const aplicar = async () => {
+    setAplicando(true);
+    try {
+      await criarSnapshot('Antes de atualizar cadastros pelo ERP');
+      const nm = { ...mods }; Object.entries(plano.mudancas).forEach(([id, ch]) => { nm[id] = { ...(nm[id] || {}), ...ch }; });
+      await saveMods(nm);
+      showToast(`✅ ${Object.keys(plano.mudancas).length} cadastros atualizados • ${plano.pendentes} pendentes completados`, 'success', { duration: 6000 });
+      setDados(null);
+    } finally { setAplicando(false); }
+  };
+  const card = { background: 'var(--md-s3)', border: '1px solid var(--md-ov)', borderRadius: 24, padding: 22 };
+  return (
+    <div style={card}>
+      <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--md-on)' }}>⬇ Atualizar cadastros pelo ERP</div>
+      <div style={{ fontSize: 12, color: 'var(--md-mut)', marginTop: 4, lineHeight: 1.6 }}>
+        No ERP gere o relatório <b>Cliente/Vendedor</b> (Clientes: Ativos • Cidade: Todas), salve como Planilha Excel e depois como CSV.<br />
+        Completa endereço dos <b>pendentes</b>, telefone, CEP, data de cadastro e última compra. Só atualiza clientes que já estão no CRM (revenda). <b>Não mexe na carteira.</b>
+      </div>
+      <input ref={inputRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={e => { if (e.target.files[0]) ler(e.target.files[0]); e.target.value = ''; }} />
+      {!plano ? (
+        <button onClick={() => inputRef.current?.click()} style={{ marginTop: 16, padding: '0 22px', background: 'var(--md-pc)', border: 'none', color: 'var(--md-onpc)', fontSize: 13, fontWeight: 600 }}>📄 Escolher CSV do relatório</button>
+      ) : (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10 }}>
+            {[['No relatório', dados.length], ['Encontrados no CRM', plano.encontrados], ['Pendentes completados', plano.pendentes], ['Endereços preenchidos', plano.enderecos], ['Telefones', plano.telefones], ['CEPs', plano.cep], ['Do CRM fora do relatório', plano.foraDoErp], ['Não são do CRM (ignorados)', plano.ignorados]].map(([l, v]) => (
+              <div key={l} style={{ background: 'var(--md-s2)', borderRadius: 16, padding: '12px 14px' }}>
+                <div style={{ fontSize: 10, color: 'var(--md-mut)', textTransform: 'uppercase', letterSpacing: 1 }}>{l}</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--md-on)', marginTop: 2 }}>{v.toLocaleString('pt-BR')}</div>
+              </div>
+            ))}
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--md-onv)', marginTop: 14, cursor: 'pointer' }}>
+            <input type="checkbox" checked={sobrescrever} onChange={e => setSobrescrever(e.target.checked)} />
+            Atualizar também endereços que já existem no CRM (usar o do ERP)
+          </label>
+          <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+            <button onClick={() => setDados(null)} disabled={aplicando} style={{ padding: '0 18px', background: 'transparent', border: '1px solid var(--md-ol)', color: 'var(--md-onv)', fontSize: 13 }}>Cancelar</button>
+            <button onClick={aplicar} disabled={aplicando || !Object.keys(plano.mudancas).length} style={{ padding: '0 22px', background: 'var(--md-pc)', border: 'none', color: 'var(--md-onpc)', fontSize: 13, fontWeight: 600 }}>{aplicando ? 'Aplicando...' : `✅ Atualizar ${Object.keys(plano.mudancas).length} cadastros`}</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// v11: ABA CARTEIRA
+// ============================================================
+function CarteiraTab({ clientes, getClientData, vendas, aliasClientes, resolveAlias, carteira, carteiraOk, vendedoresAtivos, transferirClientes, carteiraConflOk, salvarCarteiraConflOk, abrirClientes, showToast }) {
+  const donos = useMemo(() => [...vendedoresAtivos, 'EMPRESA'], [vendedoresAtivos]);
+  const ativos = useMemo(() => clientes.filter(c => !aliasClientes[String(c.i)]).map(c => getClientData(c)).filter(c => c.a !== 0), [clientes, aliasClientes, getClientData]);
+  const stats = useMemo(() => cadStatsVendas(vendas, resolveAlias), [vendas, resolveAlias]);
+  const [rodando, setRodando] = useState(null);
+  const [massa, setMassa] = useState({ de: '', para: '', conf: false });
+  const [hist, setHist] = useState([]);
+  useEffect(() => { window.PetecaCarteira.recentes(40).then(setHist).catch(() => {}); }, [carteira]);
+
+  const regraInicial = (id) => { const s = stats[String(id)]; const v = s && s.vendUlt; return v && vendedoresAtivos.includes(v) ? v : 'EMPRESA'; };
+  const semDono = ativos.filter(c => !carteira[String(c.i)]);
+  const contagem = useMemo(() => { const m = {}; donos.forEach(d => m[d] = 0); ativos.forEach(c => { const d = (carteira[String(c.i)] || {}).vendedor; if (d) m[d] = (m[d] || 0) + 1; }); return m; }, [ativos, carteira, donos]);
+
+  // vendas fora da carteira (últimos 90 dias)
+  const conflitos = useMemo(() => {
+    const lim = new Date(Date.now() - 90 * 864e5).toISOString().slice(0, 10); const m = {};
+    Object.values(vendas).forEach(arr => (arr || []).forEach(v => {
+      if (!v.clienteId || (v.data || '') < lim) return; const id = String(resolveAlias(v.clienteId)); const dono = (carteira[id] || {}).vendedor;
+      const vend = String(v.vendedor || '').toUpperCase().trim(); if (!dono || !vend || vend === dono) return;
+      if (carteiraConflOk[id] && carteiraConflOk[id] >= v.data) return;
+      const k = id + '|' + vend; const x = m[k] = m[k] || { id, dono, vend, n: 0, ult: '' }; x.n++; if (v.data > x.ult) x.ult = v.data;
+    }));
+    const nomes = {}; ativos.forEach(c => nomes[String(c.i)] = c.n);
+    return Object.values(m).map(x => ({ ...x, nome: nomes[x.id] || ('#' + x.id) })).sort((a, b) => b.ult.localeCompare(a.ult));
+  }, [vendas, carteira, resolveAlias, carteiraConflOk, ativos]);
+
+  const aplicarRegra = async (lista, motivo) => {
+    setRodando('regra');
+    try { const porDono = {}; lista.forEach(c => { const d = regraInicial(c.i); (porDono[d] = porDono[d] || []).push(c.i); });
+      for (const [d, ids] of Object.entries(porDono)) await transferirClientes(ids, d, motivo);
+    } finally { setRodando(null); }
+  };
+  const prevSemDono = useMemo(() => { const m = {}; semDono.forEach(c => { const d = regraInicial(c.i); m[d] = (m[d] || 0) + 1; }); return m; }, [semDono, stats, vendedoresAtivos]);
+
+  const card = { background: 'var(--md-s3)', border: '1px solid var(--md-ov)', borderRadius: 24, padding: 20, marginBottom: 16 };
+  if (carteiraOk === 'erro') return <div style={card}><div style={{ fontSize: 15, color: '#fca5a5', fontWeight: 600 }}>⚠ Tabela da carteira não encontrada</div><div style={{ fontSize: 12, color: 'var(--md-mut)', marginTop: 6 }}>Rode o arquivo <b>supabase-carteira.sql</b> no SQL Editor do Supabase e recarregue a página.</div></div>;
+  if (!carteiraOk) return <div style={card}>Carregando carteira...</div>;
+  const vazia = Object.keys(carteira).length === 0;
+  return (
+    <div style={{ animation: 'fadeIn .3s ease' }}>
+      {semDono.length > 0 && (
+        <div style={{ ...card, border: '1px solid color-mix(in srgb,#fcd34d 40%,transparent)' }}>
+          <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--md-on)' }}>{vazia ? '🚀 Carga inicial da carteira' : `🆕 ${semDono.length} cliente(s) sem dono`}</div>
+          <div style={{ fontSize: 12, color: 'var(--md-mut)', marginTop: 4 }}>Regra: dono = <b>vendedor da última compra</b>, se ele for um vendedor ativo. Senão (ou se nunca comprou) → <b>EMPRESA</b>. Depois disso, só muda por transferência.</div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 12 }}>
+            {Object.entries(prevSemDono).sort((a, b) => b[1] - a[1]).map(([d, n]) => <span key={d} style={{ padding: '6px 14px', borderRadius: 999, background: 'var(--md-s5)', fontSize: 12, color: 'var(--md-on)' }}>{d}: <b>{n}</b></span>)}
+          </div>
+          <button disabled={!!rodando} onClick={() => aplicarRegra(semDono, vazia ? 'Carga inicial (último vendedor)' : 'Cliente novo (último vendedor)')} style={{ marginTop: 14, padding: '0 22px', background: 'var(--md-pc)', border: 'none', color: 'var(--md-onpc)', fontSize: 13, fontWeight: 600 }}>{rodando === 'regra' ? 'Aplicando...' : `✅ Definir dono de ${semDono.length} cliente(s)`}</button>
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 12, marginBottom: 16 }}>
+        {donos.map(d => (
+          <div key={d} onClick={() => abrirClientes(d)} title="Ver clientes desta carteira" style={{ cursor: 'pointer', background: 'var(--md-s3)', border: '1px solid var(--md-ov)', borderRadius: 20, padding: '16px 18px' }}>
+            <div style={{ fontSize: 11, color: 'var(--md-mut)', textTransform: 'uppercase', letterSpacing: 1 }}>{d === 'EMPRESA' ? '🏢 EMPRESA' : '👤 ' + d}</div>
+            <div style={{ fontSize: 26, fontWeight: 700, color: d === 'EMPRESA' ? '#fcd34d' : 'var(--md-p75)', marginTop: 4 }}>{(contagem[d] || 0).toLocaleString('pt-BR')}</div>
+            <div style={{ fontSize: 11, color: 'var(--md-mut)' }}>clientes</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={card}>
+        <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--md-on)' }}>🔁 Transferir carteira inteira</div>
+        <div style={{ fontSize: 12, color: 'var(--md-mut)', marginTop: 4 }}>Ex.: vendedor saiu da empresa. Os Kanbans abertos vão junto.</div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <select value={massa.de} onChange={e => setMassa({ ...massa, de: e.target.value, conf: false })} style={{ padding: '0 14px', background: 'var(--md-s2)', border: '1px solid var(--md-ol)', color: 'var(--md-on)' }}>
+            <option value="">De...</option>{[...new Set([...donos, ...Object.values(carteira).map(x => x.vendedor)])].map(d => <option key={d} value={d}>{d} ({contagem[d] || 0})</option>)}
+          </select>
+          <span style={{ color: 'var(--md-mut)' }}>→</span>
+          <select value={massa.para} onChange={e => setMassa({ ...massa, para: e.target.value, conf: false })} style={{ padding: '0 14px', background: 'var(--md-s2)', border: '1px solid var(--md-ol)', color: 'var(--md-on)' }}>
+            <option value="">Para...</option>{donos.filter(d => d !== massa.de).map(d => <option key={d} value={d}>{d}</option>)}
+          </select>
+          {!massa.conf ? (
+            <button disabled={!massa.de || !massa.para || !contagem[massa.de]} onClick={() => setMassa({ ...massa, conf: true })} style={{ padding: '0 20px', background: 'var(--md-pc)', border: 'none', color: 'var(--md-onpc)', fontSize: 13, fontWeight: 600 }}>Transferir</button>
+          ) : (
+            <>
+              <span style={{ fontSize: 12, color: '#fcd34d' }}>Mover {contagem[massa.de]} clientes de {massa.de} para {massa.para}?</span>
+              <button onClick={() => setMassa({ ...massa, conf: false })} style={{ padding: '0 14px', background: 'transparent', border: '1px solid var(--md-ol)', color: 'var(--md-onv)', fontSize: 12 }}>Não</button>
+              <button disabled={!!rodando} onClick={async () => { setRodando('massa'); try { const ids = Object.values(carteira).filter(x => x.vendedor === massa.de).map(x => x.cliente_id); await transferirClientes(ids, massa.para, `Carteira inteira de ${massa.de}`); setMassa({ de: '', para: '', conf: false }); } finally { setRodando(null); } }} style={{ padding: '0 18px', background: '#dc2626', border: 'none', color: '#fff', fontSize: 12, fontWeight: 700 }}>{rodando === 'massa' ? 'Movendo...' : 'Sim, transferir'}</button>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div style={card}>
+        <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--md-on)' }}>⚠ Vendas fora da carteira <span style={{ fontSize: 12, color: 'var(--md-mut)', fontWeight: 400 }}>• últimos 90 dias • {conflitos.length}</span></div>
+        <div style={{ fontSize: 12, color: 'var(--md-mut)', marginTop: 4, marginBottom: 10 }}>Cliente comprou com um vendedor diferente do dono. Transfira ou mantenha (some até a próxima venda fora da carteira).</div>
+        {!conflitos.length && <div style={{ fontSize: 13, color: '#86efac', padding: '10px 0' }}>✓ Nenhum conflito.</div>}
+        <div style={{ maxHeight: 380, overflowY: 'auto' }}>
+          {conflitos.map(x => (
+            <div key={x.id + x.vend} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 0', borderBottom: '1px solid var(--md-ov)', fontSize: 12, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <div style={{ color: 'var(--md-on)', fontWeight: 600 }}>{x.nome} <span style={{ color: 'var(--md-mut)', fontWeight: 400 }}>#{x.id}</span></div>
+                <div style={{ color: 'var(--md-mut)' }}>dono <b>{x.dono}</b> • vendido por <b>{x.vend}</b> ({x.n}x, últ. {fmtD(x.ult)})</div>
+              </div>
+              {vendedoresAtivos.includes(x.vend) && <button onClick={() => transferirClientes([x.id], x.vend, `Comprou com ${x.vend}`)} style={{ padding: '0 14px', minHeight: 34, background: 'var(--md-pc)', border: 'none', color: 'var(--md-onpc)', fontSize: 11, fontWeight: 600 }}>Passar para {x.vend}</button>}
+              <button onClick={() => salvarCarteiraConflOk({ ...carteiraConflOk, [x.id]: x.ult })} style={{ padding: '0 14px', minHeight: 34, background: 'transparent', border: '1px solid var(--md-ol)', color: 'var(--md-onv)', fontSize: 11 }}>Manter com {x.dono}</button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={card}>
+        <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--md-on)', marginBottom: 10 }}>🕑 Últimas transferências</div>
+        {!hist.length && <div style={{ fontSize: 12, color: 'var(--md-mut)' }}>Nenhuma ainda.</div>}
+        {hist.map(h => {
+          const c = ativos.find(x => String(x.i) === String(h.cliente_id));
+          return <div key={h.id} style={{ fontSize: 12, padding: '6px 0', borderBottom: '1px solid var(--md-ov)', color: 'var(--md-onv)' }}><b style={{ color: 'var(--md-on)' }}>{c ? c.n : '#' + h.cliente_id}</b> • {h.de || '—'} → <b>{h.para}</b> • {h.motivo || ''} <span style={{ color: 'var(--md-mut)' }}>• {h.por} • {new Date(h.em).toLocaleString('pt-BR')}</span></div>;
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Bloco de carteira dentro do modal do cliente
+function CarteiraCliente({ clienteId, carteira, vendedoresAtivos, transferirClientes }) {
+  const info = carteira[String(clienteId)];
+  const [para, setPara] = useState('');
+  const [motivo, setMotivo] = useState('');
+  const [hist, setHist] = useState([]);
+  const [salvando, setSalvando] = useState(false);
+  const carregar = () => window.PetecaCarteira.historico(clienteId).then(setHist).catch(() => {});
+  useEffect(() => { carregar(); }, [clienteId, info && info.vendedor]);
+  return (
+    <div style={{ background: 'var(--md-s1)', borderRadius: 14, padding: 16, marginBottom: 16 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--md-p75)', marginBottom: 8 }}>👤 Carteira</div>
+      <div style={{ fontSize: 14, color: 'var(--md-on)', fontWeight: 600 }}>{info ? info.vendedor : 'Sem dono definido'}</div>
+      {info && <div style={{ fontSize: 11, color: 'var(--md-mut)', marginTop: 2 }}>desde {new Date(info.desde).toLocaleDateString('pt-BR')} • por {info.por || '—'}</div>}
+      <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+        <select value={para} onChange={e => setPara(e.target.value)} style={{ padding: '0 12px', background: 'var(--md-s3)', border: '1px solid var(--md-ov)', color: 'var(--md-on)' }}>
+          <option value="">Transferir para...</option>
+          {[...vendedoresAtivos, 'EMPRESA'].filter(v => !info || v !== info.vendedor).map(v => <option key={v} value={v}>{v}</option>)}
+        </select>
+        <input value={motivo} onChange={e => setMotivo(e.target.value)} placeholder="Motivo (opcional)" style={{ flex: 1, minWidth: 140, padding: '0 12px', background: 'var(--md-s3)', border: '1px solid var(--md-ov)', color: 'var(--md-on)' }} />
+        <button disabled={!para || salvando} onClick={async () => { setSalvando(true); try { await transferirClientes([clienteId], para, motivo || 'Transferência manual'); setPara(''); setMotivo(''); carregar(); } finally { setSalvando(false); } }} style={{ padding: '0 18px', background: 'var(--md-pc)', border: 'none', color: 'var(--md-onpc)', fontSize: 12, fontWeight: 600 }}>{salvando ? '...' : 'Transferir'}</button>
+      </div>
+      {hist.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          {hist.slice(0, 8).map(h => <div key={h.id} style={{ fontSize: 11, color: 'var(--md-mut)', padding: '3px 0' }}>{new Date(h.em).toLocaleDateString('pt-BR')} • {h.de || '—'} → <b style={{ color: 'var(--md-onv)' }}>{h.para}</b> • {h.motivo || ''} • {h.por}</div>)}
+        </div>
+      )}
     </div>
   );
 }
