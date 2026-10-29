@@ -212,7 +212,7 @@ window.storage={get:function(k){return o().then(function(d){return new Promise(f
   // SINCRONIZAÇÃO DOS DADOS DO CRM (IndexedDB local <-> tabela crm_kv)
   // O navegador vira cache; a nuvem é a fonte oficial.
   // ------------------------------------------------------------------
-  var SYNC_RE = /^(peteca_crm_clientes|peteca_crm_mods|peteca_crm_vendas_index|peteca_vendas_ano_\d{4}|peteca_anotacoes_clientes|peteca_alias_clientes|peteca_metas|peteca_nao_duplicados|peteca_mesclagens|peteca_carteira_ok)$/;
+  var SYNC_RE = /^(peteca_crm_clientes|peteca_crm_mods|peteca_crm_vendas_index|peteca_vendas_ano_\d{4}|peteca_anotacoes_clientes|peteca_alias_clientes|peteca_metas|peteca_nao_duplicados|peteca_mesclagens|peteca_carteira_ok|peteca_produtos_cfg)$/;
   var META_KEY = 'peteca_sync_meta', PEND_KEY = 'peteca_sync_pending';
   var meta = ler(META_KEY, {}), pend = ler(PEND_KEY, {}), seq = Date.now();
   var raw = null, flushing = null, timer = null, autoIv = null;
@@ -793,6 +793,39 @@ function CRMPeteca() {
   const csvAnaliticoRef = useRef(null);
   const PAGE_SIZE = 50;
   const [vendas, setVendas] = useState({});
+  const [prodCfg, setProdCfg] = useState({
+    alias: {},
+    nao: {},
+    log: []
+  });
+  const prodNomeAtual = useMemo(() => {
+    const al = prodCfg.alias || {};
+    const m = {};
+    Object.values(vendas).forEach(arr => (arr || []).forEach(v => (v.produtos || []).forEach(p => {
+      const d = String(p.descricao || '').trim();
+      if (!d || d === 'PRODUTO') return;
+      const k = prodResolver(al, p.codigo);
+      if (!m[k] || (v.data || '') >= m[k].d) m[k] = {
+        d: v.data || '',
+        n: d
+      };
+    })));
+    return m;
+  }, [vendas, prodCfg]);
+  const normProds = useCallback(lista => {
+    const al = prodCfg.alias || {};
+    return (lista || []).map(p => {
+      const k = prodResolver(al, p.codigo);
+      const n = prodNomeAtual[k];
+      const cod = isNaN(Number(k)) ? k : Number(k);
+      return String(p.codigo) === k && (!n || n.n === p.descricao) ? p : {
+        ...p,
+        codigo: cod,
+        descricao: n ? n.n : p.descricao,
+        codigoOriginal: p.codigo
+      };
+    });
+  }, [prodCfg, prodNomeAtual]);
   const [importStep, setImportStep] = useState(0);
   const [csvSintetico, setCsvSintetico] = useState(null);
   const [csvAnalitico, setCsvAnalitico] = useState(null);
@@ -1806,6 +1839,24 @@ function CRMPeteca() {
     setCarteiraConflOk(v);
     await window.storage.set('peteca_carteira_ok', JSON.stringify(v));
   };
+  const loadProdCfg = async () => setProdCfg(await lerKV('peteca_produtos_cfg', {
+    alias: {},
+    nao: {},
+    log: []
+  }));
+  const salvarProdCfg = async v => {
+    setProdCfg(v);
+    await window.storage.set('peteca_produtos_cfg', JSON.stringify(v));
+  };
+  useEffect(() => {
+    loadProdCfg();
+    const g = e => {
+      const ks = e.detail && e.detail.keys || [];
+      if (ks.includes('peteca_produtos_cfg')) loadProdCfg();
+    };
+    window.addEventListener('peteca-sync-changed', g);
+    return () => window.removeEventListener('peteca-sync-changed', g);
+  }, []);
   useEffect(() => {
     loadCarteira();
     loadCadastrosExtras();
@@ -3717,7 +3768,7 @@ function CRMPeteca() {
     const topClientes = Object.values(clienteGrupos).sort((a, b) => b.valor - a.valor).slice(0, 30);
     const prodMap = {};
     vendasFiltradas.forEach(v => {
-      (v.produtos || []).forEach(p => {
+      normProds(v.produtos).forEach(p => {
         const key = p.codigo;
         if (!prodMap[key]) prodMap[key] = {
           codigo: p.codigo,
@@ -4747,7 +4798,7 @@ function CRMPeteca() {
       Object.values(clienteGruposCidade).forEach(g => {
         g.produtosMap = {};
         vendasCidade.filter(v => g.membros.includes(v.clienteId)).forEach(v => {
-          (v.produtos || []).forEach(p => {
+          normProds(v.produtos).forEach(p => {
             if (!g.produtosMap[p.codigo]) g.produtosMap[p.codigo] = {
               cod: p.codigo,
               desc: p.descricao,
@@ -4788,7 +4839,7 @@ function CRMPeteca() {
       const maxAnoCid = Math.max(...anosCid.map(([, d]) => d.valor), 1);
       const prodCidadeMap = {};
       vendasCidade.forEach(v => {
-        (v.produtos || []).forEach(p => {
+        normProds(v.produtos).forEach(p => {
           if (!prodCidadeMap[p.codigo]) prodCidadeMap[p.codigo] = {
             cod: p.codigo,
             desc: p.descricao,
@@ -5624,7 +5675,10 @@ function CRMPeteca() {
     const allSales = allSalesRaw.map(v => v.clienteId && aliasClientes[String(v.clienteId)] ? {
       ...v,
       clienteId: resolveAlias(v.clienteId)
-    } : v).filter(v => !inativosIds.has(v.clienteId));
+    } : v).filter(v => !inativosIds.has(v.clienteId)).map(v => ({
+      ...v,
+      produtos: normProds(v.produtos)
+    }));
     const clienteToCidade = {};
     const clienteToNome = {};
     clientes.forEach(c => {
@@ -5636,7 +5690,7 @@ function CRMPeteca() {
     const salesFilt = allSales.filter(v => anosFilt.includes(v.data?.slice(0, 4)));
     const prodMap = {};
     salesFilt.forEach(v => {
-      (v.produtos || []).forEach(p => {
+      normProds(v.produtos).forEach(p => {
         if (!prodMap[p.codigo]) prodMap[p.codigo] = {
           codigo: p.codigo,
           descricao: p.descricao,
@@ -7141,7 +7195,10 @@ function CRMPeteca() {
     const allSales = allSalesRaw.map(v => v.clienteId && aliasClientes[String(v.clienteId)] ? {
       ...v,
       clienteId: resolveAlias(v.clienteId)
-    } : v).filter(v => !inativosIds.has(v.clienteId));
+    } : v).filter(v => !inativosIds.has(v.clienteId)).map(v => ({
+      ...v,
+      produtos: normProds(v.produtos)
+    }));
     const clienteToCidade = {};
     const clienteToNome = {};
     clientes.forEach(c => {
@@ -7169,7 +7226,7 @@ function CRMPeteca() {
       if (v.clienteId) vendMap[vend].clientes.add(v.clienteId);
       const cid = clienteToCidade[v.clienteId];
       if (cid) vendMap[vend].cidades.add(cid);
-      (v.produtos || []).forEach(p => vendMap[vend].produtos.add(p.codigo));
+      normProds(v.produtos).forEach(p => vendMap[vend].produtos.add(p.codigo));
       if (v.data > vendMap[vend].ultimaVenda) vendMap[vend].ultimaVenda = v.data;
       if (v.data < vendMap[vend].primeiraVenda) vendMap[vend].primeiraVenda = v.data;
     });
@@ -7244,7 +7301,7 @@ function CRMPeteca() {
       const topClientesV = Object.values(clienteGruposV).sort((a, b) => b.valor - a.valor).slice(0, 30);
       const prodRank = {};
       vendasV.forEach(v => {
-        (v.produtos || []).forEach(p => {
+        normProds(v.produtos).forEach(p => {
           if (!prodRank[p.codigo]) prodRank[p.codigo] = {
             cod: p.codigo,
             desc: p.descricao,
@@ -8527,7 +8584,7 @@ function CRMPeteca() {
     });
     const produtosFiltrados = {};
     salesFilt.forEach(v => {
-      (v.produtos || []).forEach(p => {
+      normProds(v.produtos).forEach(p => {
         if (!produtosFiltrados[p.codigo]) produtosFiltrados[p.codigo] = {
           cod: p.codigo,
           desc: p.descricao,
@@ -9716,7 +9773,7 @@ function CRMPeteca() {
         paddingTop: 6,
         borderTop: "1px dashed var(--md-ov)"
       }
-    }, (v.produtos || []).map((p, pi) => React.createElement("div", {
+    }, normProds(v.produtos).map((p, pi) => React.createElement("div", {
       key: pi,
       style: {
         display: "flex",
@@ -9828,7 +9885,7 @@ function CRMPeteca() {
       if (v.data < clienteMap[key].primeiraCompra) clienteMap[key].primeiraCompra = v.data;
       const vd = v.vendedor || "SEM VENDEDOR";
       clienteMap[key].vendedoresHist[vd] = (clienteMap[key].vendedoresHist[vd] || 0) + (v.valorLiquido || 0);
-      (v.produtos || []).forEach(p => {
+      normProds(v.produtos).forEach(p => {
         if (!clienteMap[key].produtos[p.codigo]) clienteMap[key].produtos[p.codigo] = {
           desc: p.descricao,
           qtde: 0,
@@ -12153,6 +12210,8 @@ function CRMPeteca() {
     mesclarGrupos: mesclarGrupos,
     mesclagens: mesclagens,
     desfazerMesclagem: desfazerMesclagem,
+    prodCfg: prodCfg,
+    salvarProdCfg: salvarProdCfg,
     carteira: carteira,
     criarSnapshot: criarSnapshot,
     showToast: showToast
@@ -21116,7 +21175,7 @@ function cadDetectar(lista, naoDup) {
 }
 function CadastrosTab(props) {
   const [sub, setSub] = useState('duplicados');
-  const tabs = [['duplicados', '🧬 Duplicados'], ['erp', '⬇ Atualizar pelo ERP'], ['mesclagens', '↩ Mesclagens feitas (' + (props.mesclagens || []).length + ')']];
+  const tabs = [['duplicados', '🧬 Duplicados'], ['produtos', '📦 Produtos'], ['erp', '⬇ Atualizar pelo ERP'], ['mesclagens', '↩ Mesclagens feitas (' + (props.mesclagens || []).length + ')']];
   return React.createElement("div", {
     style: {
       animation: 'fadeIn .3s ease'
@@ -21139,7 +21198,7 @@ function CadastrosTab(props) {
       fontSize: 13,
       fontWeight: 600
     }
-  }, l))), sub === 'duplicados' && React.createElement(CentralDuplicados, props), sub === 'erp' && React.createElement(AtualizarPeloERP, props), sub === 'mesclagens' && React.createElement(MesclagensFeitas, props));
+  }, l))), sub === 'duplicados' && React.createElement(CentralDuplicados, props), sub === 'produtos' && React.createElement(ProdutosDuplicados, props), sub === 'erp' && React.createElement(AtualizarPeloERP, props), sub === 'mesclagens' && React.createElement(MesclagensFeitas, props));
 }
 function CentralDuplicados({
   clientes,
@@ -22824,6 +22883,529 @@ function CarteiraCliente({
       color: 'var(--md-onv)'
     }
   }, h.para), " \u2022 ", h.motivo || '', " \u2022 ", h.por))));
+}
+const prodResolver = (alias, c) => {
+  let k = String(c),
+    i = 0;
+  while (alias[k] !== undefined && alias[k] !== null && String(alias[k]) !== k && i++ < 20) k = String(alias[k]);
+  return k;
+};
+const prodPar = (a, b) => [String(a), String(b)].sort().join('|');
+const prodToks = s => cadNorm(s).split(' ').filter(Boolean);
+const prodNums = t => t.filter(x => /\d/.test(x)).sort().join(' ');
+function prodStats(vendas, alias) {
+  const m = {};
+  Object.values(vendas || {}).forEach(arr => (arr || []).forEach(v => (v.produtos || []).forEach(p => {
+    if (p.codigo === undefined || p.codigo === null) return;
+    const orig = String(p.codigo),
+      k = prodResolver(alias, orig);
+    const s = m[k] = m[k] || {
+      cod: k,
+      nome: '',
+      dNome: '',
+      vendas: 0,
+      valor: 0,
+      ult: '',
+      codigos: {},
+      nomes: {}
+    };
+    s.vendas++;
+    s.valor += p.vlrTotal || 0;
+    if ((v.data || '') > s.ult) s.ult = v.data || '';
+    s.codigos[orig] = (s.codigos[orig] || '') > (v.data || '') ? s.codigos[orig] : v.data || '';
+    const d = String(p.descricao || '').trim();
+    if (d && d !== 'PRODUTO') {
+      s.nomes[d] = (s.nomes[d] || 0) + 1;
+      if ((v.data || '') >= s.dNome) {
+        s.dNome = v.data || '';
+        s.nome = d;
+      }
+    }
+  })));
+  Object.values(m).forEach(s => {
+    if (!s.nome) s.nome = 'PRODUTO ' + s.cod;
+  });
+  return m;
+}
+function prodDetectar(stats, nao) {
+  const L = Object.values(stats).map(s => {
+    const t = prodToks(s.nome);
+    return {
+      ...s,
+      n: cadNorm(s.nome),
+      t,
+      ts: new Set(t),
+      nums: prodNums(t)
+    };
+  });
+  const porNome = {};
+  L.forEach(s => (porNome[s.n] = porNome[s.n] || []).push(s));
+  const certeza = Object.values(porNome).filter(g => g.length > 1).map(g => g.filter(x => x).sort((a, b) => b.ult.localeCompare(a.ult)));
+  const revisar = [];
+  for (let i = 0; i < L.length; i++) for (let j = i + 1; j < L.length; j++) {
+    const a = L[i],
+      b = L[j];
+    if (a.n === b.n || a.nums !== b.nums || nao[prodPar(a.cod, b.cod)]) continue;
+    let inter = 0;
+    a.ts.forEach(x => {
+      if (b.ts.has(x)) inter++;
+    });
+    if (!inter) continue;
+    const uni = a.ts.size + b.ts.size - inter;
+    const jac = uni ? inter / uni : 0;
+    const contido = inter >= 2 && inter === Math.min(a.ts.size, b.ts.size);
+    const sim = jac >= 0.75 || Math.abs(a.n.length - b.n.length) > 6 ? 0 : cadSim(a.n, b.n);
+    if (jac >= 0.75 || sim >= 0.9 || contido && jac >= 0.5) revisar.push({
+      a,
+      b,
+      score: Math.max(jac, sim)
+    });
+  }
+  revisar.sort((x, y) => y.score - x.score);
+  return {
+    certeza,
+    revisar
+  };
+}
+function ProdutosDuplicados({
+  vendas,
+  prodCfg,
+  salvarProdCfg,
+  criarSnapshot,
+  showToast
+}) {
+  const cfg = prodCfg || {
+    alias: {},
+    nao: {},
+    log: []
+  };
+  const stats = useMemo(() => prodStats(vendas, cfg.alias || {}), [vendas, cfg.alias]);
+  const det = useMemo(() => prodDetectar(stats, cfg.nao || {}), [stats, cfg.nao]);
+  const [fora, setFora] = useState({});
+  const [idx, setIdx] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [sub, setSub] = useState('certeza');
+  const [busca, setBusca] = useState('');
+  const fmtR = v => 'R$ ' + (v || 0).toLocaleString('pt-BR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+  const fd = d => d ? d.slice(8, 10) + '/' + d.slice(5, 7) + '/' + d.slice(0, 4) : '-';
+  const mesclar = async grupos => {
+    if (!grupos.length) return;
+    setBusy(true);
+    try {
+      const alias = {
+        ...(cfg.alias || {})
+      };
+      const log = [...(cfg.log || [])];
+      grupos.forEach(g => {
+        const ord = g.slice().sort((a, b) => b.ult.localeCompare(a.ult) || b.vendas - a.vendas);
+        const principal = ord[0].cod;
+        const membros = ord.slice(1).map(x => x.cod);
+        membros.forEach(c => {
+          alias[c] = principal;
+        });
+        log.unshift({
+          id: Date.now() + '-' + principal,
+          em: new Date().toISOString(),
+          principal,
+          membros,
+          nome: ord[0].nome,
+          nomes: ord.map(x => x.cod + ' ' + x.nome)
+        });
+      });
+      await salvarProdCfg({
+        ...cfg,
+        alias,
+        log: log.slice(0, 2000)
+      });
+      showToast(`✅ ${grupos.length} produto(s) unificado(s)`, 'success');
+    } catch (e) {
+      showToast('Erro: ' + e.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const naoSao = async (a, b) => {
+    await salvarProdCfg({
+      ...cfg,
+      nao: {
+        ...(cfg.nao || {}),
+        [prodPar(a.cod, b.cod)]: 1
+      }
+    });
+  };
+  const desfazer = async item => {
+    const alias = {
+      ...(cfg.alias || {})
+    };
+    item.membros.forEach(c => {
+      if (String(alias[c]) === String(item.principal)) delete alias[c];
+    });
+    await salvarProdCfg({
+      ...cfg,
+      alias,
+      log: (cfg.log || []).filter(x => x.id !== item.id)
+    });
+    showToast('↩ Desfeito', 'success');
+  };
+  const par = det.revisar[Math.min(idx, det.revisar.length - 1)];
+  useEffect(() => {
+    if (sub !== 'revisar') return;
+    const h = e => {
+      if (/INPUT|TEXTAREA|SELECT/.test((e.target || {}).tagName) || !par || busy) return;
+      const k = e.key.toLowerCase();
+      if (k === 'm') {
+        e.preventDefault();
+        mesclar([[par.a, par.b]]);
+      } else if (k === 'n') {
+        e.preventDefault();
+        naoSao(par.a, par.b);
+      } else if (e.key === 'ArrowRight') setIdx(i => Math.min(i + 1, det.revisar.length - 1));else if (e.key === 'ArrowLeft') setIdx(i => Math.max(i - 1, 0));
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  });
+  const card = {
+    background: 'var(--md-s3)',
+    border: '1px solid var(--md-ov)',
+    borderRadius: 24,
+    padding: 20,
+    marginBottom: 16
+  };
+  const chip = on => ({
+    padding: '0 18px',
+    background: on ? 'var(--md-pc)' : 'transparent',
+    border: on ? 'none' : '1px solid var(--md-ol)',
+    color: on ? 'var(--md-onpc)' : 'var(--md-onv)',
+    fontSize: 13,
+    fontWeight: 600
+  });
+  const total = Object.keys(stats).length;
+  const renomeados = Object.values(stats).filter(s => Object.keys(s.nomes).length > 1).length;
+  const selCerteza = det.certeza.filter((g, i) => !fora[g.map(x => x.cod).join(',')]);
+  const Lado = ({
+    s
+  }) => React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 240,
+      background: 'var(--md-s2)',
+      borderRadius: 18,
+      padding: 16
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--md-mut)'
+    }
+  }, "C\xD3DIGO ", s.cod, Object.keys(s.codigos).length > 1 ? ' (+' + (Object.keys(s.codigos).length - 1) + ' unificados)' : ''), React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 700,
+      color: 'var(--md-on)',
+      margin: '4px 0 8px'
+    }
+  }, s.nome), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-onv)',
+      lineHeight: 1.7
+    }
+  }, s.vendas, " vendas \u2022 ", fmtR(s.valor), React.createElement("br", null), "\xDAltima venda: ", fd(s.ult)), Object.keys(s.nomes).length > 1 && React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--md-mut)',
+      marginTop: 6
+    }
+  }, "Tamb\xE9m chamado: ", Object.keys(s.nomes).filter(n => n !== s.nome).slice(0, 3).join(' • ')));
+  return React.createElement("div", null, React.createElement("div", {
+    style: {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))',
+      gap: 10,
+      marginBottom: 16
+    }
+  }, [['Produtos vendidos', total, 'var(--md-p75)'], ['Mesmo nome (certeza)', det.certeza.length, '#4ade80'], ['Para revisar', det.revisar.length, '#fcd34d'], ['Unificados', (cfg.log || []).length, 'var(--md-on)'], ['Renomeados (nome atual)', renomeados, 'var(--md-onv)']].map(([l, v, c]) => React.createElement("div", {
+    key: l,
+    style: {
+      background: 'var(--md-s3)',
+      border: '1px solid var(--md-ov)',
+      borderRadius: 18,
+      padding: '12px 16px'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: 'var(--md-mut)',
+      textTransform: 'uppercase',
+      letterSpacing: 1
+    }
+  }, l), React.createElement("div", {
+    style: {
+      fontSize: 22,
+      fontWeight: 700,
+      color: c
+    }
+  }, v.toLocaleString('pt-BR'))))), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      marginBottom: 14
+    }
+  }, "Todo o CRM mostra o ", React.createElement("b", null, "nome mais recente"), " de cada produto. Unificar soma as vendas de c\xF3digos diferentes num s\xF3 (o c\xF3digo com venda mais recente vira o principal). Nada \xE9 apagado das vendas \u2014 d\xE1 para desfazer."), React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 8,
+      marginBottom: 16,
+      flexWrap: 'wrap'
+    }
+  }, React.createElement("button", {
+    onClick: () => setSub('certeza'),
+    style: chip(sub === 'certeza')
+  }, "\u2705 Mesmo nome (", det.certeza.length, ")"), React.createElement("button", {
+    onClick: () => setSub('revisar'),
+    style: chip(sub === 'revisar')
+  }, "\uD83D\uDD0E Revisar (", det.revisar.length, ")"), React.createElement("button", {
+    onClick: () => setSub('feitas'),
+    style: chip(sub === 'feitas')
+  }, "\u21A9 Unificados (", (cfg.log || []).length, ")"), React.createElement("button", {
+    onClick: () => setSub('todos'),
+    style: chip(sub === 'todos')
+  }, "\uD83D\uDCCB Todos os produtos")), sub === 'certeza' && React.createElement("div", {
+    style: card
+  }, !det.certeza.length ? React.createElement("div", {
+    style: {
+      color: 'var(--md-mut)',
+      fontSize: 13
+    }
+  }, "Nenhum produto com o mesmo nome em c\xF3digos diferentes. \uD83C\uDF89") : React.createElement(React.Fragment, null, React.createElement("div", {
+    style: {
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      gap: 10,
+      flexWrap: 'wrap',
+      marginBottom: 12
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: 'var(--md-on)'
+    }
+  }, "Mesmo nome com c\xF3digos diferentes. Desmarque o que ", React.createElement("b", null, "n\xE3o"), " for o mesmo produto."), React.createElement("button", {
+    disabled: busy || !selCerteza.length,
+    onClick: async () => {
+      await criarSnapshot('Antes de unificar produtos');
+      await mesclar(selCerteza);
+    },
+    style: {
+      padding: '0 22px',
+      background: 'var(--md-pc)',
+      border: 'none',
+      color: 'var(--md-onpc)',
+      fontSize: 13,
+      fontWeight: 600
+    }
+  }, busy ? 'Unificando...' : `✅ Unificar ${selCerteza.length} selecionado(s)`)), React.createElement("div", {
+    style: {
+      maxHeight: 520,
+      overflowY: 'auto'
+    }
+  }, det.certeza.map(g => {
+    const key = g.map(x => x.cod).join(',');
+    const on = !fora[key];
+    return React.createElement("label", {
+      key: key,
+      style: {
+        display: 'flex',
+        gap: 10,
+        alignItems: 'flex-start',
+        padding: '10px 4px',
+        borderBottom: '1px solid var(--md-ov)',
+        cursor: 'pointer',
+        opacity: on ? 1 : .45
+      }
+    }, React.createElement("input", {
+      type: "checkbox",
+      checked: on,
+      onChange: () => setFora({
+        ...fora,
+        [key]: on
+      }),
+      style: {
+        marginTop: 3
+      }
+    }), React.createElement("div", {
+      style: {
+        fontSize: 13
+      }
+    }, React.createElement("b", {
+      style: {
+        color: 'var(--md-on)'
+      }
+    }, g[0].nome), React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: 'var(--md-onv)',
+        marginTop: 2
+      }
+    }, g.map((x, i) => React.createElement("span", {
+      key: x.cod
+    }, i ? ' + ' : '', "c\xF3d ", React.createElement("b", null, x.cod), " (", x.vendas, " vendas, \xFAlt. ", fd(x.ult), ")", i === 0 ? ' ★ principal' : '')))));
+  })))), sub === 'revisar' && React.createElement("div", {
+    style: card
+  }, !par ? React.createElement("div", {
+    style: {
+      color: 'var(--md-mut)',
+      fontSize: 13
+    }
+  }, "Nada para revisar. \uD83C\uDF89") : React.createElement(React.Fragment, null, React.createElement("div", {
+    style: {
+      display: 'flex',
+      justifyContent: 'space-between',
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      marginBottom: 12
+    }
+  }, React.createElement("span", null, Math.min(idx, det.revisar.length - 1) + 1, " de ", det.revisar.length, " \u2022 semelhan\xE7a ", Math.round(par.score * 100), "%"), React.createElement("span", null, "Teclas: ", React.createElement("b", null, "M"), " mesmo produto \u2022 ", React.createElement("b", null, "N"), " n\xE3o s\xE3o \u2022 ", React.createElement("b", null, "\u2190 \u2192"), " navegar")), React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 12,
+      flexWrap: 'wrap'
+    }
+  }, React.createElement(Lado, {
+    s: par.a
+  }), React.createElement(Lado, {
+    s: par.b
+  })), React.createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 8,
+      marginTop: 16,
+      flexWrap: 'wrap'
+    }
+  }, React.createElement("button", {
+    disabled: idx <= 0,
+    onClick: () => setIdx(i => Math.max(i - 1, 0)),
+    style: {
+      padding: '0 16px',
+      background: 'transparent',
+      border: '1px solid var(--md-ol)',
+      color: 'var(--md-onv)'
+    }
+  }, "\u2190"), React.createElement("button", {
+    disabled: busy,
+    onClick: () => naoSao(par.a, par.b),
+    style: {
+      padding: '0 20px',
+      background: 'transparent',
+      border: '1px solid var(--md-ol)',
+      color: 'var(--md-on)',
+      fontSize: 13
+    }
+  }, "\u2715 N\xE3o s\xE3o (N)"), React.createElement("button", {
+    disabled: busy,
+    onClick: () => mesclar([[par.a, par.b]]),
+    style: {
+      padding: '0 22px',
+      background: 'var(--md-pc)',
+      border: 'none',
+      color: 'var(--md-onpc)',
+      fontSize: 13,
+      fontWeight: 600
+    }
+  }, "\u2713 Mesmo produto (M)"), React.createElement("button", {
+    disabled: idx >= det.revisar.length - 1,
+    onClick: () => setIdx(i => Math.min(i + 1, det.revisar.length - 1)),
+    style: {
+      padding: '0 16px',
+      background: 'transparent',
+      border: '1px solid var(--md-ol)',
+      color: 'var(--md-onv)'
+    }
+  }, "\u2192 pular")))), sub === 'feitas' && React.createElement("div", {
+    style: card
+  }, !(cfg.log || []).length ? React.createElement("div", {
+    style: {
+      color: 'var(--md-mut)',
+      fontSize: 13
+    }
+  }, "Nenhum produto unificado ainda.") : (cfg.log || []).map(x => React.createElement("div", {
+    key: x.id,
+    style: {
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      gap: 10,
+      padding: '10px 0',
+      borderBottom: '1px solid var(--md-ov)'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 13
+    }
+  }, React.createElement("b", {
+    style: {
+      color: 'var(--md-on)'
+    }
+  }, (stats[x.principal] || {}).nome || x.nome), " ", React.createElement("span", {
+    style: {
+      color: 'var(--md-mut)'
+    }
+  }, "c\xF3d ", x.principal, " \u2190 ", x.membros.join(', '), " \u2022 ", fd((x.em || '').slice(0, 10))), x.nomes && React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--md-mut)'
+    }
+  }, x.nomes.join(' • '))), React.createElement("button", {
+    onClick: () => desfazer(x),
+    style: {
+      padding: '0 16px',
+      background: 'transparent',
+      border: '1px solid var(--md-ol)',
+      color: 'var(--md-onv)',
+      fontSize: 12
+    }
+  }, "\u21A9 Desfazer")))), sub === 'todos' && React.createElement("div", {
+    style: card
+  }, React.createElement("input", {
+    value: busca,
+    onChange: e => setBusca(e.target.value),
+    placeholder: "Buscar nome ou c\xF3digo...",
+    style: {
+      width: '100%',
+      boxSizing: 'border-box',
+      padding: '10px 14px',
+      borderRadius: 14,
+      border: '1px solid var(--md-ol)',
+      background: 'var(--md-s2)',
+      color: 'var(--md-on)',
+      marginBottom: 10
+    }
+  }), React.createElement("div", {
+    style: {
+      maxHeight: 520,
+      overflowY: 'auto',
+      fontSize: 12
+    }
+  }, Object.values(stats).filter(s => !busca || cadNorm(s.nome).includes(cadNorm(busca)) || Object.keys(s.codigos).some(c => c.includes(busca.trim()))).sort((a, b) => b.valor - a.valor).slice(0, 400).map(s => React.createElement("div", {
+    key: s.cod,
+    style: {
+      padding: '7px 0',
+      borderBottom: '1px solid var(--md-ov)',
+      color: 'var(--md-onv)'
+    }
+  }, React.createElement("b", {
+    style: {
+      color: 'var(--md-on)'
+    }
+  }, s.nome), " \u2022 c\xF3d ", Object.keys(s.codigos).join(' + '), " \u2022 ", s.vendas, " vendas \u2022 ", fmtR(s.valor), " \u2022 \xFAlt. ", fd(s.ult), Object.keys(s.nomes).length > 1 && React.createElement("div", {
+    style: {
+      color: 'var(--md-mut)'
+    }
+  }, "nomes antigos: ", Object.keys(s.nomes).filter(n => n !== s.nome).join(' • ')))))));
 }
 function LoginCRM({
   onLogin
