@@ -528,6 +528,15 @@ window.storage={get:function(k){return o().then(function(d){return new Promise(f
       return rest('carteira_historico?select=*&cliente_id=eq.' + enc(String(cid)) + '&order=em.desc&limit=100');
     },
     recentes: function (n) { return rest('carteira_historico?select=*&order=em.desc&limit=' + (n || 50)); },
+    historicoTodos: function () {
+      var todos = [];
+      function pag(off) {
+        return rest('carteira_historico?select=cliente_id,motivo,em&order=id&limit=1000&offset=' + off).then(function (r) {
+          todos = todos.concat(r || []); return (r && r.length === 1000) ? pag(off + 1000) : todos;
+        });
+      }
+      return pag(0);
+    },
     // itens: [{cliente_id, de, para}] • move também os Kanbans abertos
     transferir: function (itens, motivo, onProg) {
       var por = nomeAtual(), agora = new Date().toISOString();
@@ -11287,22 +11296,65 @@ function CarteiraTab({ clientes, getClientData, vendas, aliasClientes, resolveAl
   const [hist, setHist] = useState([]);
   useEffect(() => { window.PetecaCarteira.recentes(40).then(setHist).catch(() => {}); }, [carteira]);
 
-  const regraInicial = (id) => { const s = stats[String(id)]; const v = s && s.vendUlt; return v && vendedoresAtivos.includes(v) ? v : 'EMPRESA'; };
+  // vendas dos últimos 12 meses: cliente -> vendedor -> [datas]
+  const vend12 = useMemo(() => {
+    const lim = new Date(Date.now() - 365 * 864e5).toISOString().slice(0, 10); const m = {};
+    Object.values(vendas).forEach(arr => (arr || []).forEach(v => {
+      if (!v.clienteId || (v.data || '') < lim) return; const vend = String(v.vendedor || '').toUpperCase().trim(); if (!vend) return;
+      const id = String(resolveAlias(v.clienteId)); const c = m[id] = m[id] || {}; (c[vend] = c[vend] || []).push(v.data);
+    }));
+    return m;
+  }, [vendas, resolveAlias]);
+  // dias atendidos = soma dos períodos (intervalo > 45 dias sem vender inicia novo período)
+  const diasAtendidos = (datas) => {
+    const d = [...new Set(datas)].sort(); const gap = (a, b) => (new Date(b) - new Date(a)) / 864e5;
+    let total = 0, ini = d[0], ant = d[0];
+    for (let i = 1; i < d.length; i++) { if (gap(ant, d[i]) > 45) { total += gap(ini, ant) + 1; ini = d[i]; } ant = d[i]; }
+    total += gap(ini, ant) + 1;
+    return { dias: Math.round(total), n: datas.length, de: d[0], ate: d[d.length - 1] };
+  };
+  // REGRA DA CARTEIRA: quem mais vendeu nos últimos 12 meses (vendedor ativo); empate = venda mais recente; sem venda = EMPRESA
+  const regraInicial = (id) => {
+    const m = vend12[String(id)]; if (!m) return 'EMPRESA'; let best = null;
+    Object.entries(m).forEach(([v, ds]) => { if (!vendedoresAtivos.includes(v)) return; const ult = ds.reduce((a, b) => a > b ? a : b, ''); if (!best || ds.length > best.n || (ds.length === best.n && ult > best.ult)) best = { v, n: ds.length, ult }; });
+    return best ? best.v : 'EMPRESA';
+  };
+  const [recalc, setRecalc] = useState(null); // {mudancas:[{id,de,para}], travados:n}
+  const MOTIVOS_AUTO = /^(Carga inicial|Cliente novo|Recálculo|Herdado na mesclagem)/;
+  const analisarRecalculo = async () => {
+    setRodando('analise');
+    try {
+      const h = await window.PetecaCarteira.historicoTodos();
+      const travados = new Set(h.filter(x => !MOTIVOS_AUTO.test(x.motivo || '')).map(x => String(x.cliente_id)));
+      const mudancas = [];
+      ativos.forEach(c => { const id = String(c.i); const atual = (carteira[id] || {}).vendedor; if (!atual || travados.has(id)) return; const novo = regraInicial(id); if (novo !== atual) mudancas.push({ id, de: atual, para: novo, nome: c.n }); });
+      setRecalc({ mudancas, travados: travados.size });
+    } catch (e) { showToast('Erro: ' + e.message, 'error'); } finally { setRodando(null); }
+  };
+  const aplicarRecalculo = async () => {
+    setRodando('recalc');
+    try { const porPara = {}; recalc.mudancas.forEach(x => (porPara[x.para] = porPara[x.para] || []).push(x.id));
+      for (const [para, ids] of Object.entries(porPara)) await transferirClientes(ids, para, 'Recálculo (12 meses)');
+      setRecalc(null);
+    } finally { setRodando(null); }
+  };
   const semDono = ativos.filter(c => !carteira[String(c.i)]);
   const contagem = useMemo(() => { const m = {}; donos.forEach(d => m[d] = 0); ativos.forEach(c => { const d = (carteira[String(c.i)] || {}).vendedor; if (d) m[d] = (m[d] || 0) + 1; }); return m; }, [ativos, carteira, donos]);
 
-  // vendas fora da carteira (últimos 90 dias)
+  // vendas fora da carteira: outro vendedor (ativo) atendeu > 70 dias somados nos últimos 12 meses
   const conflitos = useMemo(() => {
-    const lim = new Date(Date.now() - 90 * 864e5).toISOString().slice(0, 10); const m = {};
-    Object.values(vendas).forEach(arr => (arr || []).forEach(v => {
-      if (!v.clienteId || (v.data || '') < lim) return; const id = String(resolveAlias(v.clienteId)); const dono = (carteira[id] || {}).vendedor;
-      const vend = String(v.vendedor || '').toUpperCase().trim(); if (!dono || !vend || vend === dono) return;
-      if (carteiraConflOk[id] && carteiraConflOk[id] >= v.data) return;
-      const k = id + '|' + vend; const x = m[k] = m[k] || { id, dono, vend, n: 0, ult: '' }; x.n++; if (v.data > x.ult) x.ult = v.data;
-    }));
-    const nomes = {}; ativos.forEach(c => nomes[String(c.i)] = c.n);
-    return Object.values(m).map(x => ({ ...x, nome: nomes[x.id] || ('#' + x.id) })).sort((a, b) => b.ult.localeCompare(a.ult));
-  }, [vendas, carteira, resolveAlias, carteiraConflOk, ativos]);
+    const nomes = {}; ativos.forEach(c => nomes[String(c.i)] = c.n); const out = [];
+    Object.entries(vend12).forEach(([id, m]) => {
+      const dono = (carteira[id] || {}).vendedor; if (!dono || !nomes[id]) return;
+      Object.entries(m).forEach(([v, ds]) => {
+        if (v === dono || !vendedoresAtivos.includes(v)) return;
+        const a = diasAtendidos(ds); if (a.dias <= 70) return;
+        if (carteiraConflOk[id] && carteiraConflOk[id] >= a.ate) return;
+        out.push({ id, dono, vend: v, ...a, nome: nomes[id] });
+      });
+    });
+    return out.sort((a, b) => b.dias - a.dias);
+  }, [vend12, carteira, carteiraConflOk, ativos, vendedoresAtivos]);
 
   const aplicarRegra = async (lista, motivo) => {
     setRodando('regra');
@@ -11310,7 +11362,7 @@ function CarteiraTab({ clientes, getClientData, vendas, aliasClientes, resolveAl
       for (const [d, ids] of Object.entries(porDono)) await transferirClientes(ids, d, motivo);
     } finally { setRodando(null); }
   };
-  const prevSemDono = useMemo(() => { const m = {}; semDono.forEach(c => { const d = regraInicial(c.i); m[d] = (m[d] || 0) + 1; }); return m; }, [semDono, stats, vendedoresAtivos]);
+  const prevSemDono = useMemo(() => { const m = {}; semDono.forEach(c => { const d = regraInicial(c.i); m[d] = (m[d] || 0) + 1; }); return m; }, [semDono, vend12, vendedoresAtivos]);
 
   const card = { background: 'var(--md-s3)', border: '1px solid var(--md-ov)', borderRadius: 24, padding: 20, marginBottom: 16 };
   if (carteiraOk === 'erro') return <div style={card}><div style={{ fontSize: 15, color: '#fca5a5', fontWeight: 600 }}>⚠ Tabela da carteira não encontrada</div><div style={{ fontSize: 12, color: 'var(--md-mut)', marginTop: 6 }}>Rode o arquivo <b>supabase-carteira.sql</b> no SQL Editor do Supabase e recarregue a página.</div></div>;
@@ -11321,11 +11373,11 @@ function CarteiraTab({ clientes, getClientData, vendas, aliasClientes, resolveAl
       {semDono.length > 0 && (
         <div style={{ ...card, border: '1px solid color-mix(in srgb,#fcd34d 40%,transparent)' }}>
           <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--md-on)' }}>{vazia ? '🚀 Carga inicial da carteira' : `🆕 ${semDono.length} cliente(s) sem dono`}</div>
-          <div style={{ fontSize: 12, color: 'var(--md-mut)', marginTop: 4 }}>Regra: dono = <b>vendedor da última compra</b>, se ele for um vendedor ativo. Senão (ou se nunca comprou) → <b>EMPRESA</b>. Depois disso, só muda por transferência.</div>
+          <div style={{ fontSize: 12, color: 'var(--md-mut)', marginTop: 4 }}>Regra: dono = <b>quem mais vendeu para o cliente nos últimos 12 meses</b> (vendedor ativo). Sem venda em 12 meses → <b>EMPRESA</b>. Depois disso, só muda por transferência.</div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 12 }}>
             {Object.entries(prevSemDono).sort((a, b) => b[1] - a[1]).map(([d, n]) => <span key={d} style={{ padding: '6px 14px', borderRadius: 999, background: 'var(--md-s5)', fontSize: 12, color: 'var(--md-on)' }}>{d}: <b>{n}</b></span>)}
           </div>
-          <button disabled={!!rodando} onClick={() => aplicarRegra(semDono, vazia ? 'Carga inicial (último vendedor)' : 'Cliente novo (último vendedor)')} style={{ marginTop: 14, padding: '0 22px', background: 'var(--md-pc)', border: 'none', color: 'var(--md-onpc)', fontSize: 13, fontWeight: 600 }}>{rodando === 'regra' ? 'Aplicando...' : `✅ Definir dono de ${semDono.length} cliente(s)`}</button>
+          <button disabled={!!rodando} onClick={() => aplicarRegra(semDono, vazia ? 'Carga inicial (12 meses)' : 'Cliente novo (12 meses)')} style={{ marginTop: 14, padding: '0 22px', background: 'var(--md-pc)', border: 'none', color: 'var(--md-onpc)', fontSize: 13, fontWeight: 600 }}>{rodando === 'regra' ? 'Aplicando...' : `✅ Definir dono de ${semDono.length} cliente(s)`}</button>
         </div>
       )}
 
@@ -11338,6 +11390,33 @@ function CarteiraTab({ clientes, getClientData, vendas, aliasClientes, resolveAl
           </div>
         ))}
       </div>
+
+      {!vazia && (
+        <div style={card}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--md-on)' }}>♻ Recalcular pela regra</div>
+              <div style={{ fontSize: 12, color: 'var(--md-mut)', marginTop: 4 }}>Reaplica "quem mais vendeu nos últimos 12 meses" a quem nunca foi transferido manualmente. Transferências manuais ficam travadas.</div>
+            </div>
+            {!recalc && <button disabled={!!rodando} onClick={analisarRecalculo} style={{ padding: '0 20px', background: 'transparent', border: '1px solid var(--md-ol)', color: 'var(--md-on)', fontSize: 13 }}>{rodando === 'analise' ? 'Analisando...' : 'Analisar'}</button>}
+          </div>
+          {recalc && (
+            <div style={{ marginTop: 14 }}>
+              <div style={{ fontSize: 13, color: 'var(--md-on)' }}><b>{recalc.mudancas.length}</b> cliente(s) mudariam de dono • <b>{recalc.travados}</b> travado(s) por transferência manual</div>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+                {Object.entries(recalc.mudancas.reduce((m, x) => { const k = x.de + ' → ' + x.para; m[k] = (m[k] || 0) + 1; return m; }, {})).sort((a, b) => b[1] - a[1]).map(([k, n]) => <span key={k} style={{ padding: '5px 12px', borderRadius: 999, background: 'var(--md-s5)', fontSize: 12, color: 'var(--md-on)' }}>{k}: <b>{n}</b></span>)}
+              </div>
+              <div style={{ maxHeight: 200, overflowY: 'auto', marginTop: 10, fontSize: 12, color: 'var(--md-onv)' }}>
+                {recalc.mudancas.slice(0, 200).map(x => <div key={x.id} style={{ padding: '3px 0' }}>{x.nome} <span style={{ color: 'var(--md-mut)' }}>#{x.id}</span> • {x.de} → <b>{x.para}</b></div>)}
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                <button onClick={() => setRecalc(null)} style={{ padding: '0 18px', background: 'transparent', border: '1px solid var(--md-ol)', color: 'var(--md-onv)', fontSize: 13 }}>Cancelar</button>
+                <button disabled={!!rodando || !recalc.mudancas.length} onClick={aplicarRecalculo} style={{ padding: '0 22px', background: 'var(--md-pc)', border: 'none', color: 'var(--md-onpc)', fontSize: 13, fontWeight: 600 }}>{rodando === 'recalc' ? 'Aplicando...' : `✅ Aplicar ${recalc.mudancas.length} mudança(s)`}</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div style={card}>
         <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--md-on)' }}>🔁 Transferir carteira inteira</div>
@@ -11363,18 +11442,18 @@ function CarteiraTab({ clientes, getClientData, vendas, aliasClientes, resolveAl
       </div>
 
       <div style={card}>
-        <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--md-on)' }}>⚠ Vendas fora da carteira <span style={{ fontSize: 12, color: 'var(--md-mut)', fontWeight: 400 }}>• últimos 90 dias • {conflitos.length}</span></div>
-        <div style={{ fontSize: 12, color: 'var(--md-mut)', marginTop: 4, marginBottom: 10 }}>Cliente comprou com um vendedor diferente do dono. Transfira ou mantenha (some até a próxima venda fora da carteira).</div>
+        <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--md-on)' }}>⚠ Atendido por outro vendedor <span style={{ fontSize: 12, color: 'var(--md-mut)', fontWeight: 400 }}>• últimos 12 meses • mais de 70 dias • {conflitos.length}</span></div>
+        <div style={{ fontSize: 12, color: 'var(--md-mut)', marginTop: 4, marginBottom: 10 }}>Outro vendedor atendeu este cliente por mais de 70 dias (somando os períodos) — coberturas de férias ficam abaixo disso e não aparecem. Transfira ou mantenha.</div>
         {!conflitos.length && <div style={{ fontSize: 13, color: '#86efac', padding: '10px 0' }}>✓ Nenhum conflito.</div>}
         <div style={{ maxHeight: 380, overflowY: 'auto' }}>
           {conflitos.map(x => (
             <div key={x.id + x.vend} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 0', borderBottom: '1px solid var(--md-ov)', fontSize: 12, flexWrap: 'wrap' }}>
               <div style={{ flex: 1, minWidth: 220 }}>
                 <div style={{ color: 'var(--md-on)', fontWeight: 600 }}>{x.nome} <span style={{ color: 'var(--md-mut)', fontWeight: 400 }}>#{x.id}</span></div>
-                <div style={{ color: 'var(--md-mut)' }}>dono <b>{x.dono}</b> • vendido por <b>{x.vend}</b> ({x.n}x, últ. {fmtD(x.ult)})</div>
+                <div style={{ color: 'var(--md-mut)' }}>dono <b>{x.dono}</b> • <b>{x.vend}</b> atendeu <b>{x.dias} dias</b> ({x.n} vendas, de {fmtD(x.de)} a {fmtD(x.ate)})</div>
               </div>
               {vendedoresAtivos.includes(x.vend) && <button onClick={() => transferirClientes([x.id], x.vend, `Comprou com ${x.vend}`)} style={{ padding: '0 14px', minHeight: 34, background: 'var(--md-pc)', border: 'none', color: 'var(--md-onpc)', fontSize: 11, fontWeight: 600 }}>Passar para {x.vend}</button>}
-              <button onClick={() => salvarCarteiraConflOk({ ...carteiraConflOk, [x.id]: x.ult })} style={{ padding: '0 14px', minHeight: 34, background: 'transparent', border: '1px solid var(--md-ol)', color: 'var(--md-onv)', fontSize: 11 }}>Manter com {x.dono}</button>
+              <button onClick={() => salvarCarteiraConflOk({ ...carteiraConflOk, [x.id]: x.ate })} style={{ padding: '0 14px', minHeight: 34, background: 'transparent', border: '1px solid var(--md-ol)', color: 'var(--md-onv)', fontSize: 11 }}>Manter com {x.dono}</button>
             </div>
           ))}
         </div>
