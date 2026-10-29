@@ -653,6 +653,7 @@ function CRMPeteca() {
   const [showSanear, setShowSanear] = useState(false);
   const [selAbandono, setSelAbandono] = useState({});     // {id: clienteAbandono}
   const [showEnviarLote, setShowEnviarLote] = useState(false);
+  const [mesRemover, setMesRemover] = useState(null); // v10: mês aguardando confirmação de remoção
   const [tab, setTab] = useState("clientes");
   // v2 ENHANCEMENTS
   const [cmdkOpen, setCmdkOpen] = useState(false);
@@ -1881,6 +1882,25 @@ function CRMPeteca() {
     saveMods(newMods);
     setShowConfirmModal(null);
     showToast(`Cliente ${action === "inativar" ? "inativado" : "ativado"} com sucesso!`);
+  };
+
+  // v10: remover as vendas de UM mês (importação errada)
+  const removerMes = async (mes) => {
+    try {
+      await criarSnapshot(`Antes de remover o mês ${mes}`);
+      const ano = mes.slice(0, 4);
+      const novas = {...vendas};
+      const removidas = (novas[mes] || []).length;
+      delete novas[mes];
+      const doAno = Object.entries(novas).filter(([m]) => m.startsWith(ano)).flatMap(([, arr]) => arr);
+      if (doAno.length) await window.storage.set(`peteca_vendas_ano_${ano}`, JSON.stringify(doAno.map(toCompactVenda)));
+      else await window.storage.delete(`peteca_vendas_ano_${ano}`);
+      const anos = [...new Set(Object.keys(novas).map(m => m.slice(0, 4)))].sort();
+      await window.storage.set(VENDAS_STORAGE, JSON.stringify({version: 2, anos}));
+      setVendas(novas);
+      setMesRemover(null);
+      showToast(`🗑 ${mes} removido (${removidas} vendas). Ponto de restauração criado.`, 'success', {duration: 5000});
+    } catch (e) { showToast('Erro ao remover mês: ' + e.message, 'error'); }
   };
 
   // IDE management
@@ -7362,9 +7382,22 @@ function CRMPeteca() {
                       background:"var(--md-s1)",border:"1px solid var(--md-ov)",borderRadius:12,padding:"10px 16px",
                       display:"flex",flexDirection:"column",gap:2
                     }}>
-                      <div style={{fontSize:14,fontWeight:600,color:"var(--md-p55)"}}>{m}</div>
+                      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8}}>
+                        <div style={{fontSize:14,fontWeight:600,color:"var(--md-p55)"}}>{m}</div>
+                        <button className="md-icon" onClick={() => setMesRemover(mesRemover === m ? null : m)} title={`Remover as vendas de ${m}`}
+                          style={{width:24,height:24,padding:0,background:"transparent",border:"none",color:"var(--md-mut)",fontSize:12,cursor:"pointer"}}>🗑</button>
+                      </div>
                       <div style={{fontSize:11,color:"var(--md-mut)"}}>{count} vendas</div>
                       <div style={{fontSize:11,color:"#22c55e"}}>R$ {valor.toLocaleString('pt-BR',{minimumFractionDigits:2})}</div>
+                      {mesRemover === m && (
+                        <div style={{display:"flex",flexDirection:"column",gap:4,marginTop:6}}>
+                          <div style={{fontSize:10,color:"#fca5a5"}}>Apagar {count} vendas?</div>
+                          <div style={{display:"flex",gap:4}}>
+                            <button className="md-icon" onClick={() => setMesRemover(null)} style={{flex:1,minHeight:26,padding:"0 8px",background:"transparent",border:"1px solid var(--md-ol)",color:"var(--md-onv)",fontSize:10}}>Não</button>
+                            <button className="md-icon" onClick={() => removerMes(m)} style={{flex:1,minHeight:26,padding:"0 8px",background:"#dc2626",border:"none",color:"#fff",fontSize:10,fontWeight:700}}>Apagar</button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
