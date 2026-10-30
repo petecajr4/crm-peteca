@@ -440,7 +440,11 @@ window.storage={get:function(k){return o().then(function(d){return new Promise(f
   // ------------------------------------------------------------------
   // KANBAN — mesmo "contrato" da API antiga (Apps Script), agora no Supabase
   // ------------------------------------------------------------------
-  function comoAntigo(k) { if (!k) return k; var o = Object.assign({}, k); o.finalizado = k.finalizado ? 'sim' : 'nao'; return o; }
+  function comoAntigo(k) { if (!k) return k; var o = Object.assign({}, k); o.finalizado = k.finalizado ? 'sim' : 'nao'; o.encerrado = !!(k.finalizado && !k.arquivado); return o; }
+  function semColuna(e) { return /arquivado|reaberto_de|column|42703|PGRST204/i.test(String(e && e.message)); }
+  function listaIn(ids) { return enc(ids.map(function (x) { return '"' + String(x).replace(/"/g, '') + '"'; }).join(',')); }
+  // motivos que contam como recuperação: saem do rodapé na hora
+  function ehRecuperado(m) { return /^recuperado|voltou a comprar/i.test(String(m || '')); }
   function hist(kanban_id, acao, x) {
     x = x || {};
     return rest('kanban_historico', { method: 'POST', prefer: 'return=minimal', body: {
@@ -458,7 +462,9 @@ window.storage={get:function(k){return o().then(function(d){return new Promise(f
       return rest('kanbans?select=*&order=criado_em.desc').then(function (k) { return { ok: true, kanbans: k.map(comoAntigo) }; });
     },
     getByVendedor: function (p) {
-      return rest('kanbans?select=*&finalizado=eq.false&vendedor=eq.' + enc(p.vendedor) + '&order=criado_em.desc')
+      // ativos + encerrados que ainda estão no rodapé
+      return rest('kanbans?select=*&vendedor=eq.' + enc(p.vendedor) + '&or=(finalizado.eq.false,arquivado.eq.false)&order=criado_em.desc')
+        .catch(function (e) { if (!semColuna(e)) throw e; return rest('kanbans?select=*&finalizado=eq.false&vendedor=eq.' + enc(p.vendedor) + '&order=criado_em.desc'); })
         .then(function (k) { return { ok: true, kanbans: k.map(comoAntigo) }; });
     },
     hasNewKanbans: function (p) {
@@ -482,16 +488,29 @@ window.storage={get:function(k){return o().then(function(d){return new Promise(f
       var cid = String(p.cliente_id);
       return rest('kanbans?select=id&finalizado=eq.false&cliente_id=eq.' + enc(cid)).then(function (ex) {
         if (ex && ex.length) return { ok: false, error: 'Cliente já possui Kanban ativo' };
-        return rest('kanbans', { method: 'POST', prefer: 'return=representation', body: {
-          cliente_id: cid, cliente_nome: p.cliente_nome || 'Cliente sem nome', cliente_cidade: p.cliente_cidade || '',
-          vendedor: p.vendedor, faturamento_hist: Number(p.faturamento_hist) || 0,
-          potencial_perdido: Number(p.potencial_perdido) || 0, observacoes: p.observacoes || '',
-          criado_por: p.criado_por || nomeAtual()
-        } }).then(function (r) {
-          var k = r && r[0];
-          return hist(k.id, 'criou', { por: p.criado_por, detalhes: p.observacoes || null })
-            .then(function () { return { ok: true, id: k.id, kanban: comoAntigo(k) }; });
-        });
+        // Kanbans anteriores (deste cliente e do mesmo grupo IDE) que ainda estão no rodapé → saem da tela antiga
+        var grupo = [cid].concat((p.membros || []).map(String)).filter(function (x, i, a) { return x && a.indexOf(x) === i; });
+        var anteriores = [];
+        return rest('kanbans?select=id,vendedor&finalizado=eq.true&arquivado=eq.false&cliente_id=in.(' + listaIn(grupo) + ')&order=criado_em.desc')
+          .catch(function () { return []; })
+          .then(function (ant) {
+            anteriores = ant || [];
+            return rest('kanbans', { method: 'POST', prefer: 'return=representation', body: {
+              cliente_id: cid, cliente_nome: p.cliente_nome || 'Cliente sem nome', cliente_cidade: p.cliente_cidade || '',
+              vendedor: p.vendedor, faturamento_hist: Number(p.faturamento_hist) || 0,
+              potencial_perdido: Number(p.potencial_perdido) || 0, observacoes: p.observacoes || '',
+              criado_por: p.criado_por || nomeAtual()
+            } });
+          }).then(function (r) {
+            var k = r && r[0];
+            var pr = hist(k.id, anteriores.length ? 'reativou' : 'criou', { por: p.criado_por, detalhes: p.observacoes || (anteriores.length ? 'Reativado — histórico anterior mantido' : null) });
+            if (anteriores.length) {
+              pr = pr.then(function () { return rest('kanbans?id=eq.' + k.id, { method: 'PATCH', body: { reaberto_de: anteriores[0].id }, prefer: 'return=minimal' }).catch(function () {}); })
+                .then(function () { return rest('kanbans?id=in.(' + listaIn(anteriores.map(function (a) { return a.id; })) + ')', { method: 'PATCH', body: { arquivado: true }, prefer: 'return=minimal' }).catch(function () {}); })
+                .then(function () { return Promise.all(anteriores.map(function (a) { return hist(a.id, 'arquivou', { por: p.criado_por, detalhes: 'Cliente reativado em novo Kanban (' + p.vendedor + ')' }); })); });
+            }
+            return pr.then(function () { return { ok: true, id: k.id, kanban: comoAntigo(k), reativou: anteriores.length }; });
+          });
       });
     },
     updateStatus: function (p) {
@@ -513,9 +532,37 @@ window.storage={get:function(k){return o().then(function(d){return new Promise(f
         .then(function () { return { ok: true }; });
     },
     finalize: function (p) {
-      return rest('kanbans?id=eq.' + p.id, { method: 'PATCH', body: { finalizado: true, motivo_final: p.motivo || '' }, prefer: 'return=minimal' })
+      // recuperado sai do quadro; perdido/sem resposta/descartado fica preto no rodapé até o admin tirar
+      var body = { finalizado: true, motivo_final: p.motivo || '' };
+      if (ehRecuperado(p.motivo)) body.arquivado = true;
+      return rest('kanbans?id=eq.' + p.id, { method: 'PATCH', body: body, prefer: 'return=minimal' })
+        .catch(function (e) { if (!semColuna(e)) throw e; return rest('kanbans?id=eq.' + p.id, { method: 'PATCH', body: { finalizado: true, motivo_final: p.motivo || '' }, prefer: 'return=minimal' }); })
         .then(function () { return hist(p.id, 'finalizou', { por: p.por, detalhes: p.motivo || null }); })
         .then(function () { return { ok: true }; });
+    },
+    arquivar: function (p) {
+      return rest('kanbans?id=eq.' + p.id, { method: 'PATCH', body: { arquivado: true }, prefer: 'return=minimal' })
+        .then(function () { return hist(p.id, 'arquivou', { por: p.por, detalhes: 'Tirado do rodapé pelo admin' }); })
+        .then(function () { return { ok: true }; }, function (e) { return { ok: false, error: semColuna(e) ? 'Rode o arquivo supabase-kanban-encerrados.sql no Supabase' : e.message }; });
+    },
+    // todos os Kanbans (de qualquer época/estado) de um cliente ou grupo IDE + linha do tempo
+    historicoCliente: function (p) {
+      var ids = (p.cliente_ids || []).map(String).filter(Boolean);
+      if (!ids.length) return Promise.resolve({ ok: true, kanbans: [] });
+      return rest('rpc/kanban_historico_cliente', { method: 'POST', body: { p_ids: ids } }).then(function (r) {
+        return { ok: true, kanbans: (r || []).map(function (k) { var ev = k.eventos; var o = comoAntigo(k); o.eventos = ev || []; return o; }) };
+      }, function () { return acoes.historicoClienteDireto({ cliente_ids: ids }); });
+    },
+    historicoClienteDireto: function (p) {
+      var ids = (p.cliente_ids || []).map(String).filter(Boolean);
+      return rest('kanbans?select=*&cliente_id=in.(' + listaIn(ids) + ')&order=criado_em.desc').then(function (ks) {
+        ks = ks || [];
+        if (!ks.length) return { ok: true, kanbans: [] };
+        return rest('kanban_historico?select=*&kanban_id=in.(' + listaIn(ks.map(function (k) { return k.id; })) + ')&order=em.asc').then(function (h) {
+          var por = {}; (h || []).forEach(function (x) { (por[x.kanban_id] = por[x.kanban_id] || []).push({ acao: x.acao, por: x.por, de: x.de, para: x.para, detalhes: x.detalhe, quando: x.em }); });
+          return { ok: true, kanbans: ks.map(function (k) { var o = comoAntigo(k); o.eventos = por[k.id] || []; return o; }) };
+        });
+      });
     },
     autoFinalize: function (p) {
       var ids = (p.cliente_ids || []).map(String), lotes = [];
@@ -529,7 +576,8 @@ window.storage={get:function(k){return o().then(function(d){return new Promise(f
       }, Promise.resolve()).then(function () {
         return ativos.reduce(function (pr, k) {
           return pr.then(function () {
-            return rest('kanbans?id=eq.' + k.id, { method: 'PATCH', body: { finalizado: true, motivo_final: 'Cliente voltou a comprar' }, prefer: 'return=minimal' })
+            return rest('kanbans?id=eq.' + k.id, { method: 'PATCH', body: { finalizado: true, arquivado: true, motivo_final: 'Recuperado: voltou a comprar' }, prefer: 'return=minimal' })
+              .catch(function (e) { if (!semColuna(e)) throw e; return rest('kanbans?id=eq.' + k.id, { method: 'PATCH', body: { finalizado: true, motivo_final: 'Recuperado: voltou a comprar' }, prefer: 'return=minimal' }); })
               .then(function () { return hist(k.id, 'auto_finalizou', { por: 'Sistema', detalhes: 'Cliente voltou a comprar' }); });
           });
         }, Promise.resolve());
@@ -1996,7 +2044,11 @@ function CRMPeteca() {
     loadCarteira();
     loadCadastrosExtras();
     const carregaVend = () => window.kanbanAPI('getUsuarios').then(r => {
-      if (r.ok && r.usuarios.length) setVendedoresAtivos(r.usuarios.filter(u => u.tipo === 'vendedor').map(u => u.nome));
+      if (r.ok && r.usuarios.length) {
+        const vs = r.usuarios.filter(u => u.tipo === 'vendedor').map(u => u.nome);
+        window.__petecaVendedores = vs;
+        setVendedoresAtivos(vs);
+      }
     });
     carregaVend();
     window.addEventListener('peteca-usuarios-mudou', carregaVend);
@@ -2204,7 +2256,7 @@ function CRMPeteca() {
   }, [clientes, mods, getClientData]);
   const clienteIdeMap = useMemo(() => {
     const map = {};
-    const allClients = clientes.map(c => getClientData(c));
+    const allClients = clientes.filter(c => !aliasSourceIds.has(String(c.i))).map(c => getClientData(c));
     const ideGroups = {};
     allClients.forEach(c => {
       if (c.d) {
@@ -2240,7 +2292,7 @@ function CRMPeteca() {
       }
     });
     return map;
-  }, [clientes, mods, getClientData]);
+  }, [clientes, mods, getClientData, aliasSourceIds]);
   const agruparVendasPorIde = useCallback(vendasArray => {
     const grupos = {};
     vendasArray.forEach(v => {
@@ -2945,7 +2997,7 @@ function CRMPeteca() {
     return () => clearInterval(iv);
   }, [loading, vendasProntas, bkpDir, bkpDirStatus, autoBkpInfo]);
   const stats = useMemo(() => {
-    const all = clientes.map(c => getClientData(c));
+    const all = clientes.filter(c => !aliasSourceIds.has(String(c.i))).map(c => getClientData(c));
     const ativos = all.filter(c => c.a === 1);
     const inativos = all.filter(c => c.a === 0);
     const cidadesSet = new Set(all.map(c => c.c));
@@ -8581,6 +8633,7 @@ function CRMPeteca() {
     });
     clientes.forEach(c => {
       if (c.a !== 1) return;
+      if (aliasSourceIds.has(String(c.i))) return;
       if (fluxoCidadeFiltro && c.c !== fluxoCidadeFiltro) return;
       const ideInfo = clienteIdeMap[c.i];
       const key = ideInfo ? ideInfo.key : 'cli_' + c.i;
@@ -9332,6 +9385,11 @@ function CRMPeteca() {
         background: "var(--md-s1)",
         position: "sticky",
         left: 0,
+        width: 200,
+        minWidth: 200,
+        maxWidth: 200,
+        overflow: "hidden",
+        boxSizing: "border-box",
         zIndex: 11,
         minWidth: 200,
         maxWidth: 200
@@ -9348,6 +9406,11 @@ function CRMPeteca() {
         background: "var(--md-s1)",
         position: "sticky",
         left: 200,
+        width: 90,
+        minWidth: 90,
+        maxWidth: 90,
+        overflow: "hidden",
+        boxSizing: "border-box",
         zIndex: 11,
         minWidth: 90
       }
@@ -9363,6 +9426,11 @@ function CRMPeteca() {
         background: "var(--md-s1)",
         position: "sticky",
         left: 290,
+        width: 50,
+        minWidth: 50,
+        maxWidth: 50,
+        overflow: "hidden",
+        boxSizing: "border-box",
         zIndex: 11,
         minWidth: 50
       }
@@ -9378,6 +9446,11 @@ function CRMPeteca() {
         background: "var(--md-s1)",
         position: "sticky",
         left: 340,
+        width: 60,
+        minWidth: 60,
+        maxWidth: 60,
+        overflow: "hidden",
+        boxSizing: "border-box",
         zIndex: 11,
         minWidth: 60
       }
@@ -9418,6 +9491,11 @@ function CRMPeteca() {
           padding: "6px 12px",
           position: "sticky",
           left: 0,
+          width: 200,
+          minWidth: 200,
+          maxWidth: 200,
+          overflow: "hidden",
+          boxSizing: "border-box",
           background: c.semVendaNoPeriodo ? "var(--md-s1)" : "var(--md-s2)",
           borderRight: "1px solid var(--md-s4)",
           maxWidth: 200,
@@ -9463,6 +9541,11 @@ function CRMPeteca() {
           textAlign: "right",
           position: "sticky",
           left: 200,
+          width: 90,
+          minWidth: 90,
+          maxWidth: 90,
+          overflow: "hidden",
+          boxSizing: "border-box",
           background: "var(--md-s2)",
           borderRight: "1px solid var(--md-s4)"
         }
@@ -9483,6 +9566,11 @@ function CRMPeteca() {
           textAlign: "center",
           position: "sticky",
           left: 290,
+          width: 50,
+          minWidth: 50,
+          maxWidth: 50,
+          overflow: "hidden",
+          boxSizing: "border-box",
           background: "var(--md-s2)",
           borderRight: "1px solid var(--md-s4)"
         }
@@ -9499,6 +9587,11 @@ function CRMPeteca() {
           textAlign: "center",
           position: "sticky",
           left: 340,
+          width: 60,
+          minWidth: 60,
+          maxWidth: 60,
+          overflow: "hidden",
+          boxSizing: "border-box",
           background: "var(--md-s2)",
           borderRight: "1px solid var(--md-s4)"
         }
@@ -9580,6 +9673,11 @@ function CRMPeteca() {
         padding: "12px 12px",
         position: "sticky",
         left: 0,
+        width: 200,
+        minWidth: 200,
+        maxWidth: 200,
+        overflow: "hidden",
+        boxSizing: "border-box",
         background: "var(--md-s1)",
         borderTop: "2px solid var(--md-ov)",
         fontSize: 11,
@@ -9592,6 +9690,11 @@ function CRMPeteca() {
         textAlign: "right",
         position: "sticky",
         left: 200,
+        width: 90,
+        minWidth: 90,
+        maxWidth: 90,
+        overflow: "hidden",
+        boxSizing: "border-box",
         background: "var(--md-s1)",
         borderTop: "2px solid var(--md-ov)",
         fontSize: 12,
@@ -9603,6 +9706,11 @@ function CRMPeteca() {
         padding: "12px",
         position: "sticky",
         left: 290,
+        width: 50,
+        minWidth: 50,
+        maxWidth: 50,
+        overflow: "hidden",
+        boxSizing: "border-box",
         background: "var(--md-s1)",
         borderTop: "2px solid var(--md-ov)"
       }
@@ -9611,6 +9719,11 @@ function CRMPeteca() {
         padding: "12px",
         position: "sticky",
         left: 340,
+        width: 60,
+        minWidth: 60,
+        maxWidth: 60,
+        overflow: "hidden",
+        boxSizing: "border-box",
         background: "var(--md-s1)",
         borderTop: "2px solid var(--md-ov)"
       }
@@ -9952,11 +10065,18 @@ function CRMPeteca() {
       ...v,
       clienteId: resolveAlias(v.clienteId)
     } : v).filter(v => !inativosIds.has(v.clienteId));
-    const clientesComMods = clientes.map(c => getClientData(c));
+    const clientesComMods = clientes.filter(c => !aliasSourceIds.has(String(c.i))).map(c => getClientData(c));
     const inativosSet = new Set(clientesComMods.filter(c => c.a !== 1).map(c => c.i));
     const kanbanPorCliente = {};
+    const encerradoPorCliente = {};
     kanbans.forEach(k => {
-      if (String(k.finalizado).toLowerCase() === 'sim') return;
+      if (String(k.finalizado).toLowerCase() === 'sim') {
+        if (/^recuperado|voltou a comprar/i.test(k.motivo_final || '')) return;
+        const cid = String(k.cliente_id),
+          at = encerradoPorCliente[cid];
+        if (!at || String(k.finalizado_em || k.criado_em) > String(at.finalizado_em || at.criado_em)) encerradoPorCliente[cid] = k;
+        return;
+      }
       kanbanPorCliente[String(k.cliente_id)] = k;
     });
     const findKanban = membros => {
@@ -9965,6 +10085,15 @@ function CRMPeteca() {
         if (kanbanPorCliente[String(mid)]) return kanbanPorCliente[String(mid)];
       }
       return null;
+    };
+    const findEncerrado = membros => {
+      if (!Array.isArray(membros) || findKanban(membros)) return null;
+      let r = null;
+      membros.forEach(m => {
+        const k = encerradoPorCliente[String(m)];
+        if (k && (!r || String(k.finalizado_em || '') > String(r.finalizado_em || ''))) r = k;
+      });
+      return r;
     };
     const STATUS_CORES_KANBAN = {
       aberto: {
@@ -10078,6 +10207,7 @@ function CRMPeteca() {
         diasSemCompra: dias,
         status,
         vendedorPrincipal,
+        encerrado: findEncerrado(c.membros),
         ticketMedio,
         freqMensal,
         potencialPerdido,
@@ -10087,23 +10217,26 @@ function CRMPeteca() {
         })()
       };
     });
-    if (abandonoFiltro.length > 0) {
-      clientesArr = clientesArr.filter(c => abandonoFiltro.includes(c.status));
-    }
     if (abandonoCidade) clientesArr = clientesArr.filter(c => c.cidade === abandonoCidade);
     if (abandonoVendedor) clientesArr = clientesArr.filter(c => c.vendedorPrincipal === abandonoVendedor);
     if (abandonoSearch.trim()) {
       const q = abandonoSearch.toLowerCase();
-      clientesArr = clientesArr.filter(c => c.nome.toLowerCase().includes(q) || String(c.id).includes(q));
+      clientesArr = clientesArr.filter(c => c.nome.toLowerCase().includes(q) || String(c.id).includes(q) || c.membros.some(m => String(m).includes(q)));
     }
-    if (abandonoOrdem === "valor") clientesArr.sort((a, b) => b.total - a.total);else if (abandonoOrdem === "potencial") clientesArr.sort((a, b) => b.potencialPerdido - a.potencialPerdido);else if (abandonoOrdem === "dias") clientesArr.sort((a, b) => b.diasSemCompra - a.diasSemCompra);else if (abandonoOrdem === "vendas") clientesArr.sort((a, b) => b.vendas - a.vendas);
-    const totalAtivos = Object.values(clienteMap).filter(c => clienteAtivo[c.id] !== 0).length;
     const cAtivo = clientesArr.filter(c => c.status === "ativo").length;
     const cRecente = clientesArr.filter(c => c.status === "recente").length;
     const cAtencao = clientesArr.filter(c => c.status === "atencao").length;
     const cRisco = clientesArr.filter(c => c.status === "risco").length;
     const cAbandonado = clientesArr.filter(c => c.status === "abandonado").length;
+    const cEncerrado = clientesArr.filter(c => c.encerrado).length;
     const totalPotencialPerdido = clientesArr.filter(c => ["risco", "abandonado"].includes(c.status)).reduce((s, c) => s + c.potencialPerdido, 0);
+    if (abandonoFiltro.length > 0) {
+      const sit = abandonoFiltro.filter(f => f !== 'encerrado'),
+        comEnc = abandonoFiltro.includes('encerrado');
+      clientesArr = clientesArr.filter(c => sit.includes(c.status) || comEnc && c.encerrado);
+    }
+    if (abandonoOrdem === "valor") clientesArr.sort((a, b) => b.total - a.total);else if (abandonoOrdem === "potencial") clientesArr.sort((a, b) => b.potencialPerdido - a.potencialPerdido);else if (abandonoOrdem === "dias") clientesArr.sort((a, b) => b.diasSemCompra - a.diasSemCompra);else if (abandonoOrdem === "vendas") clientesArr.sort((a, b) => b.vendas - a.vendas);
+    const totalAtivos = Object.values(clienteMap).filter(c => clienteAtivo[c.id] !== 0).length;
     const recuperadosPorVendedor = {};
     Object.values(clienteMap).forEach(c => {
       if (!c.ultimaCompra) return;
@@ -10387,7 +10520,7 @@ function CRMPeteca() {
     }, "\uD83E\uDDFE Mais vendas hist\xF3ricas")))), React.createElement("div", {
       style: {
         display: "grid",
-        gridTemplateColumns: "repeat(5,1fr)",
+        gridTemplateColumns: "repeat(6,1fr)",
         gap: 12,
         marginBottom: 20
       }
@@ -10421,6 +10554,12 @@ function CRMPeteca() {
       color: "var(--ap-blue)",
       icon: "⚫",
       filtro: "abandonado"
+    }, {
+      label: "Perdidos / Encerrados",
+      count: cEncerrado,
+      color: "var(--md-mut)",
+      icon: "🏁",
+      filtro: "encerrado"
     }].map((s, i) => {
       const ativo = abandonoFiltro.includes(s.filtro);
       return React.createElement("div", {
@@ -10711,7 +10850,23 @@ function CRMPeteca() {
           whiteSpace: "nowrap",
           flexShrink: 0
         }
-      }, "\uD83D\uDD17 ", c.membros.length, "CNPJs"), kanbanInfo && React.createElement("span", {
+      }, "\uD83D\uDD17 ", c.membros.length, "CNPJs"), !kanbanInfo && c.encerrado && React.createElement("span", {
+        title: c.encerrado.motivo_final || '',
+        style: {
+          padding: "2px 8px",
+          background: "var(--md-s5)",
+          border: "1px solid var(--md-ol)",
+          borderRadius: 12,
+          fontSize: 11,
+          color: "var(--md-on)",
+          fontWeight: 600,
+          whiteSpace: "nowrap",
+          flexShrink: 0
+        }
+      }, "\uD83C\uDFC1 Encerrado ", c.encerrado.finalizado_em ? new Date(c.encerrado.finalizado_em).toLocaleDateString('pt-BR', {
+        month: '2-digit',
+        year: 'numeric'
+      }) : '', " \u2022 ", (c.encerrado.motivo_final || 'sem motivo').slice(0, 40), " \u2022 ", c.encerrado.vendedor), kanbanInfo && React.createElement("span", {
         style: {
           padding: "2px 8px",
           background: `${kanbanInfo.cor}22`,
@@ -11369,7 +11524,18 @@ function CRMPeteca() {
           }
         }, a.obs));
       }));
-    })(), (() => {
+    })(), React.createElement("div", {
+      style: {
+        background: "var(--md-s2)",
+        border: "1px solid var(--md-ov)",
+        borderRadius: 10,
+        padding: 16,
+        marginBottom: 12
+      }
+    }, React.createElement(HistoricoKanbansCliente, {
+      ids: abandonoModal.membros,
+      recarregar: kanbans.length + '|' + kanbans.filter(k => k.encerrado).length
+    })), (() => {
       const kanbanAtivoModal = findKanban(abandonoModal.membros);
       const kanbanInfoModal = kanbanAtivoModal ? STATUS_CORES_KANBAN[kanbanAtivoModal.status] : null;
       if (kanbanAtivoModal) {
@@ -11515,6 +11681,7 @@ function CRMPeteca() {
             cliente: abandonoModal
           });
         },
+        title: abandonoModal.encerrado ? 'Cria um Kanban novo; o histórico anterior continua junto' : '',
         style: {
           padding: "12px 20px",
           background: "var(--md-p55)",
@@ -11527,7 +11694,7 @@ function CRMPeteca() {
           whiteSpace: "nowrap",
           boxShadow: "0 4px 12px color-mix(in srgb,var(--md-p55) 30%,transparent)"
         }
-      }, "\uD83C\uDFB1 Enviar ao Kanban")));
+      }, abandonoModal.encerrado ? '♻ Reativar no Kanban' : '🎱 Enviar ao Kanban')));
     })(), React.createElement("div", {
       style: {
         background: "var(--md-s4)",
@@ -12375,16 +12542,20 @@ function CRMPeteca() {
     },
     showToast: showToast
   }), tab === "kanbans" && (() => {
-    const ativos = kanbans.filter(k => String(k.finalizado).toLowerCase() !== 'sim');
+    const ativos = kanbans.filter(k => String(k.finalizado).toLowerCase() !== 'sim' || k.encerrado).map(k => k.encerrado ? {
+      ...k,
+      status: 'perdido'
+    } : k);
     const statsGeral = {
-      total: ativos.length,
+      total: ativos.filter(k => !k.encerrado).length,
       aberto: 0,
       contato: 0,
       retorno: 0,
-      perdido: 0
+      perdido: 0,
+      encerrado: 0
     };
     ativos.forEach(k => {
-      if (statsGeral[k.status] !== undefined) statsGeral[k.status]++;
+      if (k.encerrado) statsGeral.encerrado++;else if (statsGeral[k.status] !== undefined) statsGeral[k.status]++;
     });
     const porVendedor = {};
     ativos.forEach(k => {
@@ -12423,6 +12594,11 @@ function CRMPeteca() {
         cor: '#6b7280',
         label: 'Perdido',
         emoji: '⚫'
+      },
+      encerrado: {
+        cor: '#636366',
+        label: 'Encerrado (rodapé)',
+        emoji: '🏁'
       }
     };
     const cidadesDisp = ['TODAS', ...new Set(ativos.map(k => k.cliente_cidade).filter(Boolean))].sort();
@@ -12817,7 +12993,7 @@ function CRMPeteca() {
         gap: 8
       }
     }, ativos.filter(k => k.vendedor === v.nome && (kanbanFiltroCidade === 'TODAS' || k.cliente_cidade === kanbanFiltroCidade)).map(k => {
-      const s = STATUS_CORES[k.status] || STATUS_CORES.aberto;
+      const s = k.encerrado ? STATUS_CORES.encerrado : STATUS_CORES[k.status] || STATUS_CORES.aberto;
       return React.createElement("div", {
         key: k.id,
         onClick: () => setKanbanDetalhe(k),
@@ -16150,7 +16326,7 @@ function CRMPeteca() {
     }, ideUnico ? `Agrupar ${selectedForIde.length} cliente${selectedForIde.length === 1 ? '' : 's'} em ${ideUnico}` : "Selecione clientes (ao menos 2, sendo um já em IDE)"));
   })(), ideAction === "sugerir" && (() => {
     const sugestoes = [];
-    const allClients = clientes.map(c => getClientData(c)).filter(c => c.a === 1);
+    const allClients = clientes.filter(c => !aliasSourceIds.has(String(c.i))).map(c => getClientData(c)).filter(c => c.a === 1);
     const porCidade = {};
     allClients.forEach(c => {
       if (!porCidade[c.c]) porCidade[c.c] = [];
@@ -17174,6 +17350,10 @@ function CRMPeteca() {
         showToast('Erro: ' + (res.error || 'desconhecido'), 'error');
       }
     },
+    onArquivado: () => {
+      showToast('📦 Tirado do rodapé — histórico mantido');
+      loadKanbansAdmin();
+    },
     tags: kanbanTags,
     adminName: adminName,
     callKanbanAPI: callKanbanAPI
@@ -17328,8 +17508,12 @@ function KanbanBolinhasAdmin({
       corEscura: '#ea580c'
     },
     perdido: {
-      cor: '#6b7280',
-      corEscura: '#374151'
+      cor: '#3a3a3c',
+      corEscura: '#1c1c1e'
+    },
+    encerrado: {
+      cor: '#1c1c1e',
+      corEscura: '#000000'
     }
   };
   const calcSize = p => {
@@ -17942,7 +18126,7 @@ function KanbanBolinhasAdmin({
     if (!p) return null;
     const banimento = banidosRef.current[k.id];
     if (banimento && banimento.phase === 'banned') return null;
-    const s = STATUS_CORES[k.status] || STATUS_CORES.aberto;
+    const s = k.encerrado ? STATUS_CORES.encerrado : STATUS_CORES[k.status] || STATUS_CORES.aberto;
     const size = p.r * 2;
     const fontSize = Math.max(9, Math.min(14, size * 0.14));
     const shortName = k.cliente_nome.length > 20 && size < 80 ? k.cliente_nome.slice(0, 18) + '…' : k.cliente_nome;
@@ -17959,7 +18143,7 @@ function KanbanBolinhasAdmin({
     } else if (isIrma) {
       boxShadow = `0 0 18px 4px ${corBorda}88, 0 4px 20px ${s.cor}66`;
     }
-    let opacity = k.status === 'perdido' ? 0.7 : 1;
+    let opacity = k.status === 'perdido' ? 0.9 : 1;
     if (isOutraCidade) opacity = 0.35;
     const isBanida = !!banimento;
     const rotacao = banimento ? banimento.rot : 0;
@@ -18031,6 +18215,7 @@ function KanbanDetalheAdminModal({
   onUpdateTags,
   onAddComment,
   onFinalize,
+  onArquivado,
   tags,
   adminName,
   callKanbanAPI
@@ -18090,8 +18275,12 @@ function KanbanDetalheAdminModal({
       loadHistorico();
     }
   };
+  const [motivoCod, setMotivoCod] = useState('');
+  const [arquivando, setArquivando] = useState(false);
+  const encerrado = kanban.encerrado || String(kanban.finalizado).toLowerCase() === 'sim';
   const handleFinalize = async () => {
-    await onFinalize(kanban.id, motivoFinal || 'Finalizado pelo admin');
+    if (!motivoCod) return;
+    await onFinalize(kanban.id, motivoCod + (motivoFinal.trim() ? ' — ' + motivoFinal.trim() : ''));
     onClose();
   };
   const s = STATUS_CORES[kanban.status] || STATUS_CORES.aberto;
@@ -18261,7 +18450,55 @@ function KanbanDetalheAdminModal({
       fontWeight: 700,
       color: 'var(--ap-red)'
     }
-  }, fmt(kanban.potencial_perdido)))), React.createElement("div", {
+  }, fmt(kanban.potencial_perdido)))), encerrado && React.createElement("div", {
+    style: {
+      padding: '16px 24px',
+      borderBottom: '1px solid color-mix(in srgb,var(--md-on) 5%,transparent)',
+      background: 'var(--md-s4)'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: 'var(--md-on)'
+    }
+  }, "\uD83C\uDFC1 Encerrado ", kanban.finalizado_em ? 'em ' + new Date(kanban.finalizado_em).toLocaleDateString('pt-BR') : ''), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-onv)',
+      marginTop: 4
+    }
+  }, "Motivo: ", React.createElement("b", null, kanban.motivo_final || '—')), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      marginTop: 6,
+      lineHeight: 1.5
+    }
+  }, "Fica como bolinha preta no rodap\xE9 (do admin e do vendedor) at\xE9 voc\xEA tirar. O hist\xF3rico nunca \xE9 apagado. Para reativar, use a aba Abandono \u2192 filtro \"Perdidos / Encerrados\" \u2192 \"\u267B Reativar no Kanban\"."), React.createElement("button", {
+    disabled: arquivando,
+    onClick: async () => {
+      setArquivando(true);
+      const r = await callKanbanAPI('arquivar', {
+        id: kanban.id,
+        por: adminName
+      });
+      setArquivando(false);
+      if (r && r.ok) {
+        if (onArquivado) onArquivado(kanban.id);
+        onClose();
+      } else alert(r && r.error || 'Erro ao tirar do rodapé');
+    },
+    style: {
+      marginTop: 12,
+      padding: '0 16px',
+      background: 'var(--md-on)',
+      color: 'var(--md-bg)',
+      border: 'none',
+      fontSize: 12,
+      fontWeight: 600
+    }
+  }, arquivando ? 'Tirando...' : '📦 Tirar do rodapé')), !encerrado && React.createElement("div", {
     style: {
       padding: '20px 24px',
       borderBottom: '1px solid color-mix(in srgb,var(--md-on) 5%,transparent)'
@@ -18394,7 +18631,7 @@ function KanbanDetalheAdminModal({
       alignItems: 'center',
       gap: 8
     }
-  }, "\uD83D\uDCBE Salvar coment\xE1rio")), React.createElement("div", {
+  }, "\uD83D\uDCBE Salvar coment\xE1rio")), !encerrado && React.createElement("div", {
     style: {
       padding: '20px 24px',
       borderBottom: '1px solid color-mix(in srgb,var(--md-on) 5%,transparent)',
@@ -18425,7 +18662,7 @@ function KanbanDetalheAdminModal({
       minWidth: 200,
       lineHeight: 1.5
     }
-  }, "Finaliza e remove este Kanban da lista ativa. Use quando o caso estiver resolvido (recuperado, perdido definitivo ou descartado)."), React.createElement("button", {
+  }, "Recuperado sai do quadro. Perdido, sem resposta ou descartado vira bolinha preta no rodap\xE9 (admin e vendedor) at\xE9 voc\xEA tirar."), React.createElement("button", {
     onClick: () => setConfirmFinalize(true),
     style: {
       padding: '8px 20px',
@@ -18439,11 +18676,28 @@ function KanbanDetalheAdminModal({
       boxShadow: '0 4px 12px color-mix(in srgb,var(--ap-green) 30%,transparent)',
       whiteSpace: 'nowrap'
     }
-  }, "\uD83C\uDFC1 Finalizar")) : React.createElement("div", null, React.createElement("input", {
+  }, "\uD83C\uDFC1 Finalizar")) : React.createElement("div", null, React.createElement("select", {
+    value: motivoCod,
+    onChange: e => setMotivoCod(e.target.value),
+    style: {
+      width: '100%',
+      marginBottom: 8,
+      padding: '0 12px',
+      background: 'var(--md-s1)',
+      border: '1px solid var(--md-ol)',
+      color: 'var(--md-on)',
+      fontSize: 13
+    }
+  }, React.createElement("option", {
+    value: ""
+  }, "Escolha o motivo..."), KH_MOTIVOS.map(m => React.createElement("option", {
+    key: m,
+    value: m
+  }, m))), React.createElement("input", {
     type: "text",
     value: motivoFinal,
     onChange: e => setMotivoFinal(e.target.value),
-    placeholder: "Motivo (ex: Voltou a comprar, Perdido pra concorrente...)",
+    placeholder: "Observa\xE7\xE3o (opcional)",
     style: {
       width: '100%',
       padding: '12px 16px',
@@ -18477,6 +18731,7 @@ function KanbanDetalheAdminModal({
     }
   }, "Cancelar"), React.createElement("button", {
     onClick: handleFinalize,
+    disabled: !motivoCod,
     style: {
       padding: '8px 16px',
       background: 'var(--ap-green)',
@@ -18524,14 +18779,7 @@ function KanbanDetalheAdminModal({
       overflowY: 'auto'
     }
   }, historico.map(h => {
-    const icones = {
-      criou: '➕',
-      mudou_status: '🔄',
-      mudou_tags: '🏷',
-      comentou: '💬',
-      finalizou: '✅',
-      auto_finalizou: '✨'
-    };
+    const icones = KH_ICONE;
     return React.createElement("div", {
       key: h.id,
       style: {
@@ -18574,7 +18822,15 @@ function KanbanDetalheAdminModal({
         whiteSpace: 'pre-wrap'
       }
     }, h.detalhes));
-  })))));
+  }))), React.createElement("div", {
+    style: {
+      padding: '0 24px 20px'
+    }
+  }, React.createElement(HistoricoKanbansCliente, {
+    ids: [kanban.cliente_id],
+    excluirId: kanban.id,
+    titulo: "\uD83D\uDDC2 Kanbans anteriores deste cliente"
+  }))));
 }
 function EnviarKanbanModal({
   cliente,
@@ -18595,7 +18851,7 @@ function EnviarKanbanModal({
   const potPerdidoRaw = cliente.potencialPerdido != null && !isNaN(cliente.potencialPerdido) ? Number(cliente.potencialPerdido) : ticketMedio * Math.max(1, Math.floor(diasSemCompra / 30));
   const potPerdido = isNaN(potPerdidoRaw) ? 0 : potPerdidoRaw;
   const clienteId = cliente.membros && cliente.membros.length > 0 ? cliente.membros[0] : cliente.i || cliente.code || 'NOVO_' + Date.now();
-  const vendedoresDropdown = ["RODRIGO", "DENIS", "ANE", "ANDERSON", "LEX", "REGINALDO"];
+  const vendedoresDropdown = window.__petecaVendedores && window.__petecaVendedores.length ? window.__petecaVendedores : ["RODRIGO", "DENIS", "ANE", "ANDERSON", "LEX", "REGINALDO"];
   const enviar = async () => {
     if (!vendedor) return;
     setLoading(true);
@@ -18608,7 +18864,8 @@ function EnviarKanbanModal({
         faturamento_hist: fatHist,
         potencial_perdido: potPerdido,
         observacoes: obs || '',
-        criado_por: adminName || 'Admin'
+        criado_por: adminName || 'Admin',
+        membros: (cliente.membros || []).map(String)
       });
       if (res.ok) {
         onSuccess(cliente.nome, vendedor);
@@ -18690,6 +18947,16 @@ function EnviarKanbanModal({
       padding: 24
     }
   }, React.createElement("div", {
+    style: {
+      marginBottom: 16,
+      maxHeight: 220,
+      overflowY: 'auto'
+    }
+  }, React.createElement(HistoricoKanbansCliente, {
+    ids: cliente.membros || [clienteId],
+    titulo: "\uD83D\uDDC2 Tentativas anteriores",
+    vazio: false
+  })), React.createElement("div", {
     style: {
       marginBottom: 16
     }
@@ -18886,7 +19153,8 @@ function EnviarKanbanLoteModal({
           faturamento_hist: Number(c.total) || 0,
           potencial_perdido: potencial(c),
           observacoes: obs || '',
-          criado_por: adminName || 'Admin'
+          criado_por: adminName || 'Admin',
+          membros: (c.membros || []).map(String)
         });
         if (res.ok) r.ok++;else if (res.error && res.error.toLowerCase().includes('já possui kanban')) r.dup++;else r.err++;
       } catch (e) {
@@ -23953,6 +24221,243 @@ function ProdutosDuplicados({
     }
   }, "nomes antigos: ", Object.keys(s.nomes).filter(n => n !== s.nome).join(' • ')))))));
 }
+const KH_STATUS = {
+  aberto: ['🔵', 'Aberto'],
+  contato: ['🟢', 'Em contato'],
+  retorno: ['🟠', 'Retorno provável'],
+  perdido: ['⚫', 'Perdido']
+};
+const KH_ICONE = {
+  criou: '🆕',
+  reativou: '♻️',
+  mudou_status: '🔁',
+  mudou_tags: '🏷',
+  comentou: '💬',
+  finalizou: '🏁',
+  auto_finalizou: '✅',
+  arquivou: '📦',
+  transferido: '👤'
+};
+const khData = d => {
+  if (!d) return '—';
+  try {
+    const x = new Date(d);
+    return x.toLocaleDateString('pt-BR') + ' ' + x.toLocaleTimeString('pt-BR', {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  } catch (e) {
+    return String(d);
+  }
+};
+const khDia = d => {
+  if (!d) return '—';
+  try {
+    return new Date(d).toLocaleDateString('pt-BR');
+  } catch (e) {
+    return String(d);
+  }
+};
+const khSituacao = k => {
+  const fin = String(k.finalizado).toLowerCase() === 'sim' || k.finalizado === true;
+  if (!fin) return {
+    txt: (KH_STATUS[k.status] || KH_STATUS.aberto).join(' ') + ' • em andamento',
+    cor: 'var(--md-p55)'
+  };
+  if (/^recuperado|voltou a comprar/i.test(k.motivo_final || '')) return {
+    txt: '✅ Recuperado',
+    cor: 'var(--ap-green, #22c55e)'
+  };
+  return {
+    txt: k.arquivado ? '⚫ Encerrado (fora do rodapé)' : '⚫ Encerrado (no rodapé)',
+    cor: 'var(--md-on)'
+  };
+};
+function khEvento(e) {
+  const L = s => (KH_STATUS[s] || [s || '?', s || '?'])[1];
+  switch (e.acao) {
+    case 'criou':
+      return 'criou o Kanban' + (e.detalhes ? ': ' + e.detalhes : '');
+    case 'reativou':
+      return 'reativou o cliente' + (e.detalhes ? ': ' + e.detalhes : '');
+    case 'mudou_status':
+      return 'situação ' + L(e.de) + ' → ' + L(e.para);
+    case 'mudou_tags':
+      return 'tags: ' + (e.detalhes || '—');
+    case 'comentou':
+      return '“' + (e.detalhes || '') + '”';
+    case 'finalizou':
+      return 'encerrou' + (e.detalhes ? ': ' + e.detalhes : '');
+    case 'auto_finalizou':
+      return 'finalizado automático: ' + (e.detalhes || 'voltou a comprar');
+    case 'arquivou':
+      return 'tirou do rodapé' + (e.detalhes ? ' — ' + e.detalhes : '');
+    case 'transferido':
+      return 'transferido ' + (e.de || '') + ' → ' + (e.para || '') + (e.detalhes ? ' (' + e.detalhes + ')' : '');
+    default:
+      return e.acao + (e.detalhes ? ': ' + e.detalhes : '');
+  }
+}
+function HistoricoKanbansCliente({
+  ids,
+  excluirId,
+  titulo,
+  recarregar,
+  vazio
+}) {
+  const [lista, setLista] = useState(null);
+  const [aberto, setAberto] = useState({});
+  const chave = (ids || []).map(String).join(',');
+  useEffect(() => {
+    let vivo = true;
+    setLista(null);
+    if (!chave || !window.kanbanAPI) {
+      setLista([]);
+      return;
+    }
+    window.kanbanAPI('historicoCliente', {
+      cliente_ids: chave.split(',')
+    }).then(r => {
+      if (vivo) setLista(r && r.ok ? r.kanbans || [] : []);
+    }).catch(() => {
+      if (vivo) setLista([]);
+    });
+    return () => {
+      vivo = false;
+    };
+  }, [chave, recarregar]);
+  const ks = (lista || []).filter(k => k.id !== excluirId);
+  if (lista && !ks.length && vazio === false) return null;
+  return React.createElement("div", {
+    style: {
+      marginTop: 4
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--md-mut)',
+      textTransform: 'uppercase',
+      letterSpacing: 0.3,
+      fontWeight: 600,
+      marginBottom: 8
+    }
+  }, titulo || '🗂 Histórico de Kanbans deste cliente', " ", lista && `(${ks.length})`), !lista ? React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      padding: 8
+    }
+  }, "Carregando hist\xF3rico...") : !ks.length ? React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      padding: '8px 0'
+    }
+  }, "Nenhum Kanban anterior.") : ks.map((k, i) => {
+    const sit = khSituacao(k);
+    const ev = k.eventos || [];
+    const exp = aberto[k.id] !== undefined ? aberto[k.id] : i === 0;
+    const comentarios = ev.filter(e => e.acao === 'comentou').length;
+    return React.createElement("div", {
+      key: k.id,
+      style: {
+        border: '1px solid var(--md-ov)',
+        borderRadius: 10,
+        marginBottom: 8,
+        background: 'var(--md-s1)',
+        overflow: 'hidden'
+      }
+    }, React.createElement("div", {
+      onClick: () => setAberto({
+        ...aberto,
+        [k.id]: !exp
+      }),
+      style: {
+        padding: '12px 12px',
+        cursor: 'pointer',
+        display: 'flex',
+        gap: 12,
+        alignItems: 'center',
+        flexWrap: 'wrap'
+      }
+    }, React.createElement("div", {
+      style: {
+        flex: 1,
+        minWidth: 180
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 600,
+        color: 'var(--md-on)'
+      }
+    }, sit.txt, " ", React.createElement("span", {
+      style: {
+        color: 'var(--md-mut)',
+        fontWeight: 400
+      }
+    }, "\u2022 ", k.vendedor)), React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--md-mut)',
+        marginTop: 2
+      }
+    }, khDia(k.criado_em), " \u2192 ", String(k.finalizado).toLowerCase() === 'sim' ? khDia(k.finalizado_em) : 'hoje', k.cliente_nome ? ` • ${k.cliente_nome}` : '', comentarios ? ` • ${comentarios} comentário(s)` : ''), k.motivo_final && React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: 'var(--md-onv)',
+        marginTop: 4
+      }
+    }, "Motivo: ", React.createElement("b", null, k.motivo_final))), React.createElement("span", {
+      style: {
+        fontSize: 12,
+        color: 'var(--md-mut)'
+      }
+    }, exp ? '▾' : '▸')), exp && React.createElement("div", {
+      style: {
+        borderTop: '1px solid var(--md-ov)',
+        padding: '8px 12px',
+        maxHeight: 260,
+        overflowY: 'auto'
+      }
+    }, !ev.length ? React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: 'var(--md-mut)'
+      }
+    }, "Sem registros.") : ev.map((e, j) => React.createElement("div", {
+      key: j,
+      style: {
+        display: 'flex',
+        gap: 8,
+        padding: '4px 0',
+        fontSize: 12,
+        color: 'var(--md-on)',
+        borderBottom: j < ev.length - 1 ? '1px dashed var(--md-ov)' : 'none'
+      }
+    }, React.createElement("span", {
+      style: {
+        width: 18,
+        flexShrink: 0
+      }
+    }, KH_ICONE[e.acao] || '•'), React.createElement("div", {
+      style: {
+        flex: 1,
+        minWidth: 0
+      }
+    }, React.createElement("div", {
+      style: {
+        wordBreak: 'break-word'
+      }
+    }, khEvento(e)), React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--md-mut)'
+      }
+    }, e.por || '—', " \u2022 ", khData(e.quando)))))));
+  }));
+}
+const KH_MOTIVOS = ['Recuperado: pedido fechado', 'Perdido: preço', 'Perdido: comprou do concorrente', 'Perdido: fechou ou mudou de ramo', 'Sem resposta', 'Descartado (não é revenda / duplicado)'];
 function LoginCRM({
   onLogin
 }) {

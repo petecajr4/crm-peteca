@@ -272,7 +272,7 @@
   // SINCRONIZAÇÃO DOS DADOS DO CRM (IndexedDB local <-> tabela crm_kv)
   // O navegador vira cache; a nuvem é a fonte oficial.
   // ------------------------------------------------------------------
-  var SYNC_RE = /^(peteca_crm_clientes|peteca_crm_mods|peteca_crm_vendas_index|peteca_vendas_ano_\d{4}|peteca_anotacoes_clientes|peteca_alias_clientes|peteca_metas)$/;
+  var SYNC_RE = /^(peteca_crm_clientes|peteca_crm_mods|peteca_crm_vendas_index|peteca_vendas_ano_\d{4}|peteca_anotacoes_clientes|peteca_alias_clientes|peteca_metas|peteca_nao_duplicados|peteca_mesclagens|peteca_carteira_ok|peteca_produtos_cfg)$/;
   var META_KEY = 'peteca_sync_meta', PEND_KEY = 'peteca_sync_pending';
   var meta = ler(META_KEY, {}), pend = ler(PEND_KEY, {}), seq = Date.now();
   var raw = null, flushing = null, timer = null, autoIv = null;
@@ -309,6 +309,20 @@
     timer = setTimeout(function () { flush().catch(function () {}); }, 1500);
   }
 
+  // junta dois JSON-objeto (mapas por id): remoto + local, campo a campo (local vence). Listas/arrays: null (não junta)
+  var conflitos = [];
+  function juntar(remotoStr, localStr) {
+    try {
+      var a = JSON.parse(remotoStr), b = JSON.parse(localStr);
+      var obj = function (x) { return x && typeof x === 'object' && !Array.isArray(x); };
+      if (!obj(a) || !obj(b)) return null;
+      var o = {}, k;
+      for (k in a) o[k] = a[k];
+      for (k in b) o[k] = (obj(a[k]) && obj(b[k])) ? Object.assign({}, a[k], b[k]) : b[k];
+      return JSON.stringify(o);
+    } catch (e) { return null; }
+  }
+
   function flush(onProg) {
     if (flushing) return flushing;
     if (!window.PetecaSB.logado()) return Promise.resolve();
@@ -326,9 +340,21 @@
       } else {
         p = raw.get(k).then(function (r) {
           if (!r || typeof r.value !== 'string') return;
-          return rest('crm_kv?on_conflict=key&select=key,updated_at', {
-            method: 'POST', body: { key: k, value: r.value, updated_by: nomeAtual() },
-            prefer: 'resolution=merge-duplicates,return=representation'
+          // v13: outro computador alterou esta chave desde o último download? junta antes de enviar
+          var pRemoto = meta[k] ? rest('crm_kv?select=value,updated_at,updated_by&key=eq.' + enc(k)) : Promise.resolve(null);
+          return pRemoto.then(function (rr) {
+            var valor = r.value;
+            if (rr && rr[0] && rr[0].updated_at !== meta[k]) {
+              var junto = juntar(rr[0].value, r.value);
+              if (junto !== null) { valor = junto; conflitos.push({ k: k, por: rr[0].updated_by, junto: true }); }
+              else conflitos.push({ k: k, por: rr[0].updated_by, junto: false });
+            }
+            return (valor !== r.value ? raw.set(k, valor) : Promise.resolve()).then(function () {
+              return rest('crm_kv?on_conflict=key&select=key,updated_at', {
+                method: 'POST', body: { key: k, value: valor, updated_by: nomeAtual() },
+                prefer: 'resolution=merge-duplicates,return=representation'
+              });
+            });
           }).then(function (res) { if (res && res[0]) meta[k] = res[0].updated_at; });
         });
       }
@@ -341,6 +367,12 @@
     })().then(function () {
       var agora = new Date().toISOString(); gravar('peteca_sync_ultimo', agora);
       emitir({ status: Object.keys(pend).length ? 'pendente' : 'ok', ultimo: agora, erro: null });
+      if (conflitos.length) {
+        var c = conflitos; conflitos = [];
+        var juntos = c.filter(function (x) { return x.junto; }).map(function (x) { return x.k; });
+        if (juntos.length) window.dispatchEvent(new CustomEvent('peteca-sync-changed', { detail: { keys: juntos } }));
+        window.dispatchEvent(new CustomEvent('peteca-sync-conflito', { detail: c }));
+      }
     }, function (e) {
       emitir({ status: /conexão/i.test(e.message) ? 'offline' : 'erro', erro: e.message });
       throw e;
@@ -421,7 +453,11 @@
   // ------------------------------------------------------------------
   // KANBAN — mesmo "contrato" da API antiga (Apps Script), agora no Supabase
   // ------------------------------------------------------------------
-  function comoAntigo(k) { if (!k) return k; var o = Object.assign({}, k); o.finalizado = k.finalizado ? 'sim' : 'nao'; return o; }
+  function comoAntigo(k) { if (!k) return k; var o = Object.assign({}, k); o.finalizado = k.finalizado ? 'sim' : 'nao'; o.encerrado = !!(k.finalizado && !k.arquivado); return o; }
+  function semColuna(e) { return /arquivado|reaberto_de|column|42703|PGRST204/i.test(String(e && e.message)); }
+  function listaIn(ids) { return enc(ids.map(function (x) { return '"' + String(x).replace(/"/g, '') + '"'; }).join(',')); }
+  // motivos que contam como recuperação: saem do rodapé na hora
+  function ehRecuperado(m) { return /^recuperado|voltou a comprar/i.test(String(m || '')); }
   function hist(kanban_id, acao, x) {
     x = x || {};
     return rest('kanban_historico', { method: 'POST', prefer: 'return=minimal', body: {
@@ -439,7 +475,9 @@
       return rest('kanbans?select=*&order=criado_em.desc').then(function (k) { return { ok: true, kanbans: k.map(comoAntigo) }; });
     },
     getByVendedor: function (p) {
-      return rest('kanbans?select=*&finalizado=eq.false&vendedor=eq.' + enc(p.vendedor) + '&order=criado_em.desc')
+      // ativos + encerrados que ainda estão no rodapé
+      return rest('kanbans?select=*&vendedor=eq.' + enc(p.vendedor) + '&or=(finalizado.eq.false,arquivado.eq.false)&order=criado_em.desc')
+        .catch(function (e) { if (!semColuna(e)) throw e; return rest('kanbans?select=*&finalizado=eq.false&vendedor=eq.' + enc(p.vendedor) + '&order=criado_em.desc'); })
         .then(function (k) { return { ok: true, kanbans: k.map(comoAntigo) }; });
     },
     hasNewKanbans: function (p) {
@@ -463,16 +501,29 @@
       var cid = String(p.cliente_id);
       return rest('kanbans?select=id&finalizado=eq.false&cliente_id=eq.' + enc(cid)).then(function (ex) {
         if (ex && ex.length) return { ok: false, error: 'Cliente já possui Kanban ativo' };
-        return rest('kanbans', { method: 'POST', prefer: 'return=representation', body: {
-          cliente_id: cid, cliente_nome: p.cliente_nome || 'Cliente sem nome', cliente_cidade: p.cliente_cidade || '',
-          vendedor: p.vendedor, faturamento_hist: Number(p.faturamento_hist) || 0,
-          potencial_perdido: Number(p.potencial_perdido) || 0, observacoes: p.observacoes || '',
-          criado_por: p.criado_por || nomeAtual()
-        } }).then(function (r) {
-          var k = r && r[0];
-          return hist(k.id, 'criou', { por: p.criado_por, detalhes: p.observacoes || null })
-            .then(function () { return { ok: true, id: k.id, kanban: comoAntigo(k) }; });
-        });
+        // Kanbans anteriores (deste cliente e do mesmo grupo IDE) que ainda estão no rodapé → saem da tela antiga
+        var grupo = [cid].concat((p.membros || []).map(String)).filter(function (x, i, a) { return x && a.indexOf(x) === i; });
+        var anteriores = [];
+        return rest('kanbans?select=id,vendedor&finalizado=eq.true&arquivado=eq.false&cliente_id=in.(' + listaIn(grupo) + ')&order=criado_em.desc')
+          .catch(function () { return []; })
+          .then(function (ant) {
+            anteriores = ant || [];
+            return rest('kanbans', { method: 'POST', prefer: 'return=representation', body: {
+              cliente_id: cid, cliente_nome: p.cliente_nome || 'Cliente sem nome', cliente_cidade: p.cliente_cidade || '',
+              vendedor: p.vendedor, faturamento_hist: Number(p.faturamento_hist) || 0,
+              potencial_perdido: Number(p.potencial_perdido) || 0, observacoes: p.observacoes || '',
+              criado_por: p.criado_por || nomeAtual()
+            } });
+          }).then(function (r) {
+            var k = r && r[0];
+            var pr = hist(k.id, anteriores.length ? 'reativou' : 'criou', { por: p.criado_por, detalhes: p.observacoes || (anteriores.length ? 'Reativado — histórico anterior mantido' : null) });
+            if (anteriores.length) {
+              pr = pr.then(function () { return rest('kanbans?id=eq.' + k.id, { method: 'PATCH', body: { reaberto_de: anteriores[0].id }, prefer: 'return=minimal' }).catch(function () {}); })
+                .then(function () { return rest('kanbans?id=in.(' + listaIn(anteriores.map(function (a) { return a.id; })) + ')', { method: 'PATCH', body: { arquivado: true }, prefer: 'return=minimal' }).catch(function () {}); })
+                .then(function () { return Promise.all(anteriores.map(function (a) { return hist(a.id, 'arquivou', { por: p.criado_por, detalhes: 'Cliente reativado em novo Kanban (' + p.vendedor + ')' }); })); });
+            }
+            return pr.then(function () { return { ok: true, id: k.id, kanban: comoAntigo(k), reativou: anteriores.length }; });
+          });
       });
     },
     updateStatus: function (p) {
@@ -494,9 +545,37 @@
         .then(function () { return { ok: true }; });
     },
     finalize: function (p) {
-      return rest('kanbans?id=eq.' + p.id, { method: 'PATCH', body: { finalizado: true, motivo_final: p.motivo || '' }, prefer: 'return=minimal' })
+      // recuperado sai do quadro; perdido/sem resposta/descartado fica preto no rodapé até o admin tirar
+      var body = { finalizado: true, motivo_final: p.motivo || '' };
+      if (ehRecuperado(p.motivo)) body.arquivado = true;
+      return rest('kanbans?id=eq.' + p.id, { method: 'PATCH', body: body, prefer: 'return=minimal' })
+        .catch(function (e) { if (!semColuna(e)) throw e; return rest('kanbans?id=eq.' + p.id, { method: 'PATCH', body: { finalizado: true, motivo_final: p.motivo || '' }, prefer: 'return=minimal' }); })
         .then(function () { return hist(p.id, 'finalizou', { por: p.por, detalhes: p.motivo || null }); })
         .then(function () { return { ok: true }; });
+    },
+    arquivar: function (p) {
+      return rest('kanbans?id=eq.' + p.id, { method: 'PATCH', body: { arquivado: true }, prefer: 'return=minimal' })
+        .then(function () { return hist(p.id, 'arquivou', { por: p.por, detalhes: 'Tirado do rodapé pelo admin' }); })
+        .then(function () { return { ok: true }; }, function (e) { return { ok: false, error: semColuna(e) ? 'Rode o arquivo supabase-kanban-encerrados.sql no Supabase' : e.message }; });
+    },
+    // todos os Kanbans (de qualquer época/estado) de um cliente ou grupo IDE + linha do tempo
+    historicoCliente: function (p) {
+      var ids = (p.cliente_ids || []).map(String).filter(Boolean);
+      if (!ids.length) return Promise.resolve({ ok: true, kanbans: [] });
+      return rest('rpc/kanban_historico_cliente', { method: 'POST', body: { p_ids: ids } }).then(function (r) {
+        return { ok: true, kanbans: (r || []).map(function (k) { var ev = k.eventos; var o = comoAntigo(k); o.eventos = ev || []; return o; }) };
+      }, function () { return acoes.historicoClienteDireto({ cliente_ids: ids }); });
+    },
+    historicoClienteDireto: function (p) {
+      var ids = (p.cliente_ids || []).map(String).filter(Boolean);
+      return rest('kanbans?select=*&cliente_id=in.(' + listaIn(ids) + ')&order=criado_em.desc').then(function (ks) {
+        ks = ks || [];
+        if (!ks.length) return { ok: true, kanbans: [] };
+        return rest('kanban_historico?select=*&kanban_id=in.(' + listaIn(ks.map(function (k) { return k.id; })) + ')&order=em.asc').then(function (h) {
+          var por = {}; (h || []).forEach(function (x) { (por[x.kanban_id] = por[x.kanban_id] || []).push({ acao: x.acao, por: x.por, de: x.de, para: x.para, detalhes: x.detalhe, quando: x.em }); });
+          return { ok: true, kanbans: ks.map(function (k) { var o = comoAntigo(k); o.eventos = por[k.id] || []; return o; }) };
+        });
+      });
     },
     autoFinalize: function (p) {
       var ids = (p.cliente_ids || []).map(String), lotes = [];
@@ -510,7 +589,8 @@
       }, Promise.resolve()).then(function () {
         return ativos.reduce(function (pr, k) {
           return pr.then(function () {
-            return rest('kanbans?id=eq.' + k.id, { method: 'PATCH', body: { finalizado: true, motivo_final: 'Cliente voltou a comprar' }, prefer: 'return=minimal' })
+            return rest('kanbans?id=eq.' + k.id, { method: 'PATCH', body: { finalizado: true, arquivado: true, motivo_final: 'Recuperado: voltou a comprar' }, prefer: 'return=minimal' })
+              .catch(function (e) { if (!semColuna(e)) throw e; return rest('kanbans?id=eq.' + k.id, { method: 'PATCH', body: { finalizado: true, motivo_final: 'Recuperado: voltou a comprar' }, prefer: 'return=minimal' }); })
               .then(function () { return hist(k.id, 'auto_finalizou', { por: 'Sistema', detalhes: 'Cliente voltou a comprar' }); });
           });
         }, Promise.resolve());
@@ -564,6 +644,70 @@
     if (!fn) return Promise.resolve({ ok: false, error: 'Ação desconhecida: ' + action });
     return Promise.resolve().then(function () { return fn(payload || {}); })
       .catch(function (e) { return { ok: false, error: e.message || String(e) }; });
+  };
+
+
+  // ------------------------------------------------------------------
+  // CARTEIRA — dono de cada cliente (tabela própria, 1 linha por cliente)
+  // ------------------------------------------------------------------
+  function lotes(arr, n) { var out = []; for (var i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; }
+  window.PetecaCarteira = {
+    listar: function () {
+      // pagina de 1000 em 1000 (limite padrão do PostgREST)
+      var todos = [];
+      function pag(off) {
+        return rest('carteira?select=cliente_id,vendedor,desde,por&order=cliente_id&limit=1000&offset=' + off).then(function (r) {
+          todos = todos.concat(r || []);
+          return (r && r.length === 1000) ? pag(off + 1000) : todos;
+        });
+      }
+      return pag(0);
+    },
+    historico: function (cid) {
+      return rest('carteira_historico?select=*&cliente_id=eq.' + enc(String(cid)) + '&order=em.desc&limit=100');
+    },
+    recentes: function (n) { return rest('carteira_historico?select=*&order=em.desc&limit=' + (n || 50)); },
+    historicoTodos: function () {
+      var todos = [];
+      function pag(off) {
+        return rest('carteira_historico?select=cliente_id,motivo,em&order=id&limit=1000&offset=' + off).then(function (r) {
+          todos = todos.concat(r || []); return (r && r.length === 1000) ? pag(off + 1000) : todos;
+        });
+      }
+      return pag(0);
+    },
+    // itens: [{cliente_id, de, para}] • move também os Kanbans abertos
+    transferir: function (itens, motivo, onProg) {
+      var por = nomeAtual(), agora = new Date().toISOString();
+      itens = (itens || []).filter(function (x) { return x && x.para && x.de !== x.para; });
+      if (!itens.length) return Promise.resolve({ ok: true, transferidos: 0, kanbans: 0 });
+      var grupos = lotes(itens, 400), feitos = 0, kmov = 0;
+      return grupos.reduce(function (p, g) {
+        return p.then(function () {
+          return rest('carteira?on_conflict=cliente_id', { method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal',
+            body: g.map(function (x) { return { cliente_id: String(x.cliente_id), vendedor: x.para, desde: agora, por: por }; }) });
+        }).then(function () {
+          return rest('carteira_historico', { method: 'POST', prefer: 'return=minimal',
+            body: g.map(function (x) { return { cliente_id: String(x.cliente_id), de: x.de || null, para: x.para, por: por, motivo: motivo || null }; }) });
+        }).then(function () {
+          // Kanbans abertos acompanham o cliente
+          var lista = g.map(function (x) { return '"' + String(x.cliente_id).replace(/"/g, '') + '"'; }).join(',');
+          return rest('kanbans?select=id,cliente_id,vendedor&finalizado=eq.false&cliente_id=in.(' + enc(lista) + ')').then(function (ks) {
+            var destino = {}; g.forEach(function (x) { destino[String(x.cliente_id)] = x.para; });
+            return (ks || []).reduce(function (p2, k) {
+              var para = destino[String(k.cliente_id)];
+              if (!para || para === 'EMPRESA' || para === k.vendedor) return p2;
+              return p2.then(function () {
+                return rest('kanbans?id=eq.' + k.id, { method: 'PATCH', body: { vendedor: para }, prefer: 'return=minimal' });
+              }).then(function () {
+                kmov++;
+                return hist(k.id, 'transferido', { por: por, de: k.vendedor, para: para, detalhes: motivo || 'Transferência de carteira' });
+              });
+            }, Promise.resolve());
+          }).catch(function () {});
+        }).then(function () { feitos += g.length; if (onProg) onProg(feitos, itens.length); });
+      }, Promise.resolve()).then(function () { return { ok: true, transferidos: feitos, kanbans: kmov }; });
+    }
   };
 
   // ------------------------------------------------------------------
@@ -917,9 +1061,15 @@ const STATUS = {
   },
   perdido: {
     label: 'Perdido',
-    cor: '#6b7280',
-    corEscura: '#374151',
+    cor: '#3a3a3c',
+    corEscura: '#1c1c1e',
     emoji: '⚫'
+  },
+  encerrado: {
+    label: 'Encerrado',
+    cor: '#1c1c1e',
+    corEscura: '#000000',
+    emoji: '🏁'
   }
 };
 function callAPI(action, payload = {}) {
@@ -976,6 +1126,243 @@ function Toast({
     }
   }, toast.msg);
 }
+const KH_STATUS = {
+  aberto: ['🔵', 'Aberto'],
+  contato: ['🟢', 'Em contato'],
+  retorno: ['🟠', 'Retorno provável'],
+  perdido: ['⚫', 'Perdido']
+};
+const KH_ICONE = {
+  criou: '🆕',
+  reativou: '♻️',
+  mudou_status: '🔁',
+  mudou_tags: '🏷',
+  comentou: '💬',
+  finalizou: '🏁',
+  auto_finalizou: '✅',
+  arquivou: '📦',
+  transferido: '👤'
+};
+const khData = d => {
+  if (!d) return '—';
+  try {
+    const x = new Date(d);
+    return x.toLocaleDateString('pt-BR') + ' ' + x.toLocaleTimeString('pt-BR', {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  } catch (e) {
+    return String(d);
+  }
+};
+const khDia = d => {
+  if (!d) return '—';
+  try {
+    return new Date(d).toLocaleDateString('pt-BR');
+  } catch (e) {
+    return String(d);
+  }
+};
+const khSituacao = k => {
+  const fin = String(k.finalizado).toLowerCase() === 'sim' || k.finalizado === true;
+  if (!fin) return {
+    txt: (KH_STATUS[k.status] || KH_STATUS.aberto).join(' ') + ' • em andamento',
+    cor: 'var(--md-p55)'
+  };
+  if (/^recuperado|voltou a comprar/i.test(k.motivo_final || '')) return {
+    txt: '✅ Recuperado',
+    cor: 'var(--ap-green, #22c55e)'
+  };
+  return {
+    txt: k.arquivado ? '⚫ Encerrado (fora do rodapé)' : '⚫ Encerrado (no rodapé)',
+    cor: 'var(--md-on)'
+  };
+};
+function khEvento(e) {
+  const L = s => (KH_STATUS[s] || [s || '?', s || '?'])[1];
+  switch (e.acao) {
+    case 'criou':
+      return 'criou o Kanban' + (e.detalhes ? ': ' + e.detalhes : '');
+    case 'reativou':
+      return 'reativou o cliente' + (e.detalhes ? ': ' + e.detalhes : '');
+    case 'mudou_status':
+      return 'situação ' + L(e.de) + ' → ' + L(e.para);
+    case 'mudou_tags':
+      return 'tags: ' + (e.detalhes || '—');
+    case 'comentou':
+      return '“' + (e.detalhes || '') + '”';
+    case 'finalizou':
+      return 'encerrou' + (e.detalhes ? ': ' + e.detalhes : '');
+    case 'auto_finalizou':
+      return 'finalizado automático: ' + (e.detalhes || 'voltou a comprar');
+    case 'arquivou':
+      return 'tirou do rodapé' + (e.detalhes ? ' — ' + e.detalhes : '');
+    case 'transferido':
+      return 'transferido ' + (e.de || '') + ' → ' + (e.para || '') + (e.detalhes ? ' (' + e.detalhes + ')' : '');
+    default:
+      return e.acao + (e.detalhes ? ': ' + e.detalhes : '');
+  }
+}
+function HistoricoKanbansCliente({
+  ids,
+  excluirId,
+  titulo,
+  recarregar,
+  vazio
+}) {
+  const [lista, setLista] = useState(null);
+  const [aberto, setAberto] = useState({});
+  const chave = (ids || []).map(String).join(',');
+  useEffect(() => {
+    let vivo = true;
+    setLista(null);
+    if (!chave || !window.kanbanAPI) {
+      setLista([]);
+      return;
+    }
+    window.kanbanAPI('historicoCliente', {
+      cliente_ids: chave.split(',')
+    }).then(r => {
+      if (vivo) setLista(r && r.ok ? r.kanbans || [] : []);
+    }).catch(() => {
+      if (vivo) setLista([]);
+    });
+    return () => {
+      vivo = false;
+    };
+  }, [chave, recarregar]);
+  const ks = (lista || []).filter(k => k.id !== excluirId);
+  if (lista && !ks.length && vazio === false) return null;
+  return React.createElement("div", {
+    style: {
+      marginTop: 4
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: 'var(--md-mut)',
+      textTransform: 'uppercase',
+      letterSpacing: 0.3,
+      fontWeight: 600,
+      marginBottom: 8
+    }
+  }, titulo || '🗂 Histórico de Kanbans deste cliente', " ", lista && `(${ks.length})`), !lista ? React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      padding: 8
+    }
+  }, "Carregando hist\xF3rico...") : !ks.length ? React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      padding: '8px 0'
+    }
+  }, "Nenhum Kanban anterior.") : ks.map((k, i) => {
+    const sit = khSituacao(k);
+    const ev = k.eventos || [];
+    const exp = aberto[k.id] !== undefined ? aberto[k.id] : i === 0;
+    const comentarios = ev.filter(e => e.acao === 'comentou').length;
+    return React.createElement("div", {
+      key: k.id,
+      style: {
+        border: '1px solid var(--md-ov)',
+        borderRadius: 10,
+        marginBottom: 8,
+        background: 'var(--md-s1)',
+        overflow: 'hidden'
+      }
+    }, React.createElement("div", {
+      onClick: () => setAberto({
+        ...aberto,
+        [k.id]: !exp
+      }),
+      style: {
+        padding: '12px 12px',
+        cursor: 'pointer',
+        display: 'flex',
+        gap: 12,
+        alignItems: 'center',
+        flexWrap: 'wrap'
+      }
+    }, React.createElement("div", {
+      style: {
+        flex: 1,
+        minWidth: 180
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 600,
+        color: 'var(--md-on)'
+      }
+    }, sit.txt, " ", React.createElement("span", {
+      style: {
+        color: 'var(--md-mut)',
+        fontWeight: 400
+      }
+    }, "\u2022 ", k.vendedor)), React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--md-mut)',
+        marginTop: 2
+      }
+    }, khDia(k.criado_em), " \u2192 ", String(k.finalizado).toLowerCase() === 'sim' ? khDia(k.finalizado_em) : 'hoje', k.cliente_nome ? ` • ${k.cliente_nome}` : '', comentarios ? ` • ${comentarios} comentário(s)` : ''), k.motivo_final && React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: 'var(--md-onv)',
+        marginTop: 4
+      }
+    }, "Motivo: ", React.createElement("b", null, k.motivo_final))), React.createElement("span", {
+      style: {
+        fontSize: 12,
+        color: 'var(--md-mut)'
+      }
+    }, exp ? '▾' : '▸')), exp && React.createElement("div", {
+      style: {
+        borderTop: '1px solid var(--md-ov)',
+        padding: '8px 12px',
+        maxHeight: 260,
+        overflowY: 'auto'
+      }
+    }, !ev.length ? React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: 'var(--md-mut)'
+      }
+    }, "Sem registros.") : ev.map((e, j) => React.createElement("div", {
+      key: j,
+      style: {
+        display: 'flex',
+        gap: 8,
+        padding: '4px 0',
+        fontSize: 12,
+        color: 'var(--md-on)',
+        borderBottom: j < ev.length - 1 ? '1px dashed var(--md-ov)' : 'none'
+      }
+    }, React.createElement("span", {
+      style: {
+        width: 18,
+        flexShrink: 0
+      }
+    }, KH_ICONE[e.acao] || '•'), React.createElement("div", {
+      style: {
+        flex: 1,
+        minWidth: 0
+      }
+    }, React.createElement("div", {
+      style: {
+        wordBreak: 'break-word'
+      }
+    }, khEvento(e)), React.createElement("div", {
+      style: {
+        fontSize: 11,
+        color: 'var(--md-mut)'
+      }
+    }, e.por || '—', " \u2022 ", khData(e.quando)))))));
+  }));
+}
+const KH_MOTIVOS = ['Recuperado: pedido fechado', 'Perdido: preço', 'Perdido: comprou do concorrente', 'Perdido: fechou ou mudou de ramo', 'Sem resposta', 'Descartado (não é revenda / duplicado)'];
 function App() {
   const [user, setUser] = useState(() => {
     return window.PetecaSB.logado() ? window.PetecaSB.perfil() : null;
@@ -1251,7 +1638,10 @@ function Home({
       vendedor: user.nome
     });
     if (res.ok) {
-      setKanbans(res.kanbans);
+      setKanbans(res.kanbans.map(k => k.encerrado ? {
+        ...k,
+        status: 'perdido'
+      } : k));
       setLastSync(Date.now());
     } else if (!silent) showToast('Erro ao carregar: ' + (res.error || 'desconhecido'), 'error');
     if (!silent) setLoading(false);
@@ -1327,12 +1717,19 @@ function Home({
       aberto: 0,
       contato: 0,
       retorno: 0,
-      perdido: 0
+      perdido: 0,
+      encerrado: 0
     };
     kanbans.forEach(k => {
+      if (k.encerrado) {
+        s.encerrado++;
+        s.perdido++;
+        return;
+      }
       s.total++;
       if (s[k.status] !== undefined) s[k.status]++;
     });
+    s.total += s.encerrado;
     return s;
   }, [kanbans]);
   const atualizarKanban = (id, changes) => {
@@ -1926,10 +2323,10 @@ function KanbanField({
       fontWeight: 600,
       pointerEvents: 'none'
     }
-  }, "\u26AB Perdidos"), kanbans.map(k => {
+  }, "\u26AB Perdidos / \uD83C\uDFC1 Encerrados"), kanbans.map(k => {
     const p = particlesRef.current[k.id];
     if (!p) return null;
-    const s = STATUS[k.status] || STATUS.aberto;
+    const s = k.encerrado ? STATUS.encerrado : STATUS[k.status] || STATUS.aberto;
     const size = p.r * 2;
     const fontSize = Math.max(9, Math.min(14, size * 0.14));
     const shortName = k.cliente_nome.length > 20 && size < 80 ? k.cliente_nome.slice(0, 18) + '…' : k.cliente_nome;
@@ -1950,7 +2347,7 @@ function KanbanField({
         boxShadow: `0 4px 20px ${s.cor}55, inset 0 2px 8px color-mix(in srgb,var(--md-on) 20%,transparent), inset 0 -4px 10px rgba(0,0,0,0.15)`,
         color: '#fff',
         fontSize: fontSize,
-        opacity: k.status === 'perdido' ? 0.7 : 1
+        opacity: k.status === 'perdido' ? 0.9 : 1
       },
       title: k.cliente_nome
     }, React.createElement("span", {
@@ -2152,7 +2549,31 @@ function KanbanModal({
       fontWeight: 700,
       color: 'var(--ap-red)'
     }
-  }, fmt(kanban.potencial_perdido)))), React.createElement("div", {
+  }, fmt(kanban.potencial_perdido)))), kanban.encerrado && React.createElement("div", {
+    style: {
+      padding: '16px 24px',
+      borderBottom: '1px solid color-mix(in srgb,var(--md-on) 5%,transparent)',
+      background: 'var(--md-s4)'
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      color: 'var(--md-on)'
+    }
+  }, "\uD83C\uDFC1 Encerrado pelo admin ", kanban.finalizado_em ? 'em ' + new Date(kanban.finalizado_em).toLocaleDateString('pt-BR') : ''), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-onv)',
+      marginTop: 4
+    }
+  }, "Motivo: ", React.createElement("b", null, kanban.motivo_final || '—')), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      marginTop: 6
+    }
+  }, "Fica no rodap\xE9 at\xE9 o admin tirar. Se o cliente for reativado, ele volta como Kanban novo.")), !kanban.encerrado && React.createElement("div", {
     style: {
       padding: '20px 24px',
       borderBottom: '1px solid color-mix(in srgb,var(--md-on) 5%,transparent)'
@@ -2368,7 +2789,15 @@ function KanbanModal({
         whiteSpace: 'pre-wrap'
       }
     }, h.detalhes));
-  })))));
+  }))), React.createElement("div", {
+    style: {
+      padding: '0 24px 20px'
+    }
+  }, React.createElement(HistoricoKanbansCliente, {
+    ids: [kanban.cliente_id],
+    excluirId: kanban.id,
+    titulo: "\uD83D\uDDC2 Tentativas anteriores com este cliente"
+  }))));
 }
 const container = document.getElementById('root');
 const root = ReactDOM.createRoot(container);
