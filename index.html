@@ -249,6 +249,20 @@ window.storage={get:function(k){return o().then(function(d){return new Promise(f
     timer = setTimeout(function () { flush().catch(function () {}); }, 1500);
   }
 
+  // junta dois JSON-objeto (mapas por id): remoto + local, campo a campo (local vence). Listas/arrays: null (não junta)
+  var conflitos = [];
+  function juntar(remotoStr, localStr) {
+    try {
+      var a = JSON.parse(remotoStr), b = JSON.parse(localStr);
+      var obj = function (x) { return x && typeof x === 'object' && !Array.isArray(x); };
+      if (!obj(a) || !obj(b)) return null;
+      var o = {}, k;
+      for (k in a) o[k] = a[k];
+      for (k in b) o[k] = (obj(a[k]) && obj(b[k])) ? Object.assign({}, a[k], b[k]) : b[k];
+      return JSON.stringify(o);
+    } catch (e) { return null; }
+  }
+
   function flush(onProg) {
     if (flushing) return flushing;
     if (!window.PetecaSB.logado()) return Promise.resolve();
@@ -266,9 +280,21 @@ window.storage={get:function(k){return o().then(function(d){return new Promise(f
       } else {
         p = raw.get(k).then(function (r) {
           if (!r || typeof r.value !== 'string') return;
-          return rest('crm_kv?on_conflict=key&select=key,updated_at', {
-            method: 'POST', body: { key: k, value: r.value, updated_by: nomeAtual() },
-            prefer: 'resolution=merge-duplicates,return=representation'
+          // v13: outro computador alterou esta chave desde o último download? junta antes de enviar
+          var pRemoto = meta[k] ? rest('crm_kv?select=value,updated_at,updated_by&key=eq.' + enc(k)) : Promise.resolve(null);
+          return pRemoto.then(function (rr) {
+            var valor = r.value;
+            if (rr && rr[0] && rr[0].updated_at !== meta[k]) {
+              var junto = juntar(rr[0].value, r.value);
+              if (junto !== null) { valor = junto; conflitos.push({ k: k, por: rr[0].updated_by, junto: true }); }
+              else conflitos.push({ k: k, por: rr[0].updated_by, junto: false });
+            }
+            return (valor !== r.value ? raw.set(k, valor) : Promise.resolve()).then(function () {
+              return rest('crm_kv?on_conflict=key&select=key,updated_at', {
+                method: 'POST', body: { key: k, value: valor, updated_by: nomeAtual() },
+                prefer: 'resolution=merge-duplicates,return=representation'
+              });
+            });
           }).then(function (res) { if (res && res[0]) meta[k] = res[0].updated_at; });
         });
       }
@@ -281,6 +307,12 @@ window.storage={get:function(k){return o().then(function(d){return new Promise(f
     })().then(function () {
       var agora = new Date().toISOString(); gravar('peteca_sync_ultimo', agora);
       emitir({ status: Object.keys(pend).length ? 'pendente' : 'ok', ultimo: agora, erro: null });
+      if (conflitos.length) {
+        var c = conflitos; conflitos = [];
+        var juntos = c.filter(function (x) { return x.junto; }).map(function (x) { return x.k; });
+        if (juntos.length) window.dispatchEvent(new CustomEvent('peteca-sync-changed', { detail: { keys: juntos } }));
+        window.dispatchEvent(new CustomEvent('peteca-sync-conflito', { detail: c }));
+      }
     }, function (e) {
       emitir({ status: /conexão/i.test(e.message) ? 'offline' : 'erro', erro: e.message });
       throw e;
@@ -1049,6 +1081,8 @@ function CRMPeteca() {
         continue;
       }
       if (content.includes("Vlr Líquido:")) {
+        const frM = content.match(/Frete:\s*([\d.,]+)/);
+        if (frM && currentVenda) currentVenda.frete = parseFloat(frM[1].replace(/\./g, '').replace(',', '.'));
         const liqMatch = content.match(/Vlr Líquido:\s*([\d.,]+)/);
         if (liqMatch) currentVenda.valorLiquido = parseFloat(liqMatch[1].replace(/\./g, '').replace(',', '.'));
         continue;
@@ -1074,7 +1108,7 @@ function CRMPeteca() {
           currentProdDesc = "";
           continue;
         }
-        const prodInlineMatch = content.match(/^(\d+)\s+([A-Z].+?)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)/);
+        const prodInlineMatch = content.match(/^(\d+)\s+(?:-\s+)?([A-ZÀ-Ú0-9].*?)\s+([\d.]+,\d{4})\s+([\d.]+,\d{2,4})\s+([\d.]+,\d{2})(?:\s|$)/) || content.match(/^(\d+)\s+(?:-\s+)?([A-ZÀ-Ú].+?)\s+([\d.,]+)\s+([\d.,]+)\s+([\d.,]+)/);
         if (prodInlineMatch) {
           currentVenda.produtos.push({
             codigo: parseInt(prodInlineMatch[1]),
@@ -1117,14 +1151,28 @@ function CRMPeteca() {
         duplicados = 0,
         semProduto = 0;
       const existingKeys = new Set();
+      const existentes = {};
       Object.values(vendas).forEach(monthData => {
         if (Array.isArray(monthData)) {
-          monthData.forEach(v => existingKeys.add(v.numSaida));
+          monthData.forEach(v => {
+            existingKeys.add(v.numSaida);
+            existentes[v.numSaida] = v;
+          });
         }
       });
+      const atualizar = [];
+      const somaP = l => (l || []).reduce((s, p) => s + (p.vlrTotal || 0), 0);
       for (const vSint of sint.vendas) {
         if (existingKeys.has(vSint.numSaida)) {
           duplicados++;
+          const vA = anal.vendasMap[vSint.numSaida],
+            ex = existentes[vSint.numSaida];
+          if (vA && vA.produtos.length && (vA.produtos.length !== (ex.produtos || []).length || Math.abs(somaP(vA.produtos) - somaP(ex.produtos)) > 0.01 || (vA.frete || 0) !== (ex.frete || 0))) atualizar.push({
+            numSaida: vSint.numSaida,
+            produtos: vA.produtos,
+            desconto: vA.desconto || 0,
+            frete: vA.frete || 0
+          });
           continue;
         }
         const vAnal = anal.vendasMap[vSint.numSaida];
@@ -1146,6 +1194,7 @@ function CRMPeteca() {
         novos++;
       }
       logs.push(`Cruzamento: ${novos} novas vendas, ${duplicados} duplicadas ignoradas, ${semProduto} sem detalhamento de produtos`);
+      if (atualizar.length) logs.push(`🔧 ${atualizar.length} vendas já importadas terão os PRODUTOS corrigidos (itens que faltavam / frete)`);
       const clienteIds = new Set(clientes.map(c => c.i));
       const novosClientes = [];
       merged.forEach(v => {
@@ -1190,7 +1239,8 @@ function CRMPeteca() {
       setParsedPreview({
         vendas: merged,
         logs,
-        novosClientes
+        novosClientes,
+        atualizar
       });
       setImportLog(logs);
       setImportStep(2);
@@ -1202,7 +1252,7 @@ function CRMPeteca() {
     setImporting(false);
   };
   const confirmarImportacao = async () => {
-    if (!parsedPreview || parsedPreview.vendas.length === 0) return;
+    if (!parsedPreview || parsedPreview.vendas.length === 0 && !(parsedPreview.atualizar || []).length) return;
     const clienteIds = new Set(clientes.map(c => c.i));
     const novos = {};
     parsedPreview.vendas.forEach(v => {
@@ -1244,7 +1294,7 @@ function CRMPeteca() {
       } else if (dec.type === 'criar') {
         novosCadastros.push({
           i: dec.id,
-          n: dec.nome || `CLIENTE ${dec.id}`,
+          n: cadNomeLimpo(dec.nome) || dec.nome || `CLIENTE ${dec.id}`,
           r: dec.rua || "",
           nu: dec.numero || "",
           b: dec.bairro || "",
@@ -1267,6 +1317,27 @@ function CRMPeteca() {
       if (!newVendas[mesAno]) newVendas[mesAno] = [];
       newVendas[mesAno] = [...newVendas[mesAno], ...vendasMes];
     }
+    const atuMap = {};
+    (parsedPreview && parsedPreview.atualizar || []).forEach(a => {
+      atuMap[a.numSaida] = a;
+    });
+    const anosAtualizados = new Set();
+    let qtdAtu = 0;
+    if (Object.keys(atuMap).length) Object.keys(newVendas).forEach(mes => {
+      if (!Array.isArray(newVendas[mes]) || !newVendas[mes].some(v => atuMap[v.numSaida])) return;
+      newVendas[mes] = newVendas[mes].map(v => {
+        const a = atuMap[v.numSaida];
+        if (!a) return v;
+        qtdAtu++;
+        anosAtualizados.add(mes.slice(0, 4));
+        return {
+          ...v,
+          produtos: a.produtos,
+          desconto: a.desconto,
+          frete: a.frete
+        };
+      });
+    });
     const porAno = {};
     Object.entries(newVendas).forEach(([mes, arr]) => {
       const ano = mes.slice(0, 4);
@@ -1309,7 +1380,8 @@ function CRMPeteca() {
         error: lastError
       };
     };
-    const anosAfetados = new Set(Object.keys(porMes).map(m => m.slice(0, 4)));
+    const anosAfetados = new Set([...Object.keys(porMes).map(m => m.slice(0, 4)), ...anosAtualizados]);
+    if (qtdAtu) setImportLog(prev => [...prev, `🔧 ${qtdAtu} vendas existentes com produtos corrigidos`]);
     const anosSalvos = [];
     const anosComErro = [];
     for (const ano of anosAfetados) {
@@ -1532,7 +1604,20 @@ function CRMPeteca() {
       });
     };
     window.addEventListener('peteca-sync-changed', f);
-    return () => window.removeEventListener('peteca-sync-changed', f);
+    const cf = e => {
+      const l = e.detail || [];
+      const fora = l.filter(x => !x.junto);
+      if (fora.length) showToast(`⚠ ${fora.map(x => x.por).join(', ')} também alterou ${fora.map(x => x.k.replace('peteca_', '')).join(', ')} — ficou a versão deste computador. Se algo sumiu, confira com ele.`, 'error', {
+        duration: 9000
+      });else if (l.length) showToast(`☁ Alterações de ${[...new Set(l.map(x => x.por))].join(', ')} foram juntadas com as suas`, 'success', {
+        duration: 4000
+      });
+    };
+    window.addEventListener('peteca-sync-conflito', cf);
+    return () => {
+      window.removeEventListener('peteca-sync-changed', f);
+      window.removeEventListener('peteca-sync-conflito', cf);
+    };
   }, []);
   useEffect(() => {
     loadData();
@@ -14574,7 +14659,7 @@ function CRMPeteca() {
       fontWeight: 700,
       cursor: "pointer"
     }
-  }, "\u2705 Confirmar importa\xE7\xE3o de ", parsedPreview.vendas.length, " vendas"))))), selectedClient && (() => {
+  }, "\u2705 Confirmar importa\xE7\xE3o de ", parsedPreview.vendas.length, " vendas", (parsedPreview.atualizar || []).length ? ` + corrigir produtos de ${parsedPreview.atualizar.length}` : ''))))), selectedClient && (() => {
     const allSales = [];
     Object.entries(vendas).forEach(([, arr]) => {
       if (Array.isArray(arr)) arr.forEach(v => allSales.push(v));
@@ -21480,7 +21565,11 @@ function CadastrosTab(props) {
       fontSize: 13,
       fontWeight: 600
     }
-  }, l))), sub === 'duplicados' && React.createElement(CentralDuplicados, props), sub === 'produtos' && React.createElement(ProdutosDuplicados, props), sub === 'erp' && React.createElement(AtualizarPeloERP, props), sub === 'mesclagens' && React.createElement(MesclagensFeitas, props));
+  }, l))), sub === 'duplicados' && React.createElement(CentralDuplicados, props), sub === 'produtos' && React.createElement(ProdutosDuplicados, props), sub === 'erp' && React.createElement(React.Fragment, null, React.createElement(AtualizarPeloERP, props), React.createElement("div", {
+    style: {
+      height: 16
+    }
+  }), React.createElement(LimparCadastros, props)), sub === 'mesclagens' && React.createElement(MesclagensFeitas, props));
 }
 function CentralDuplicados({
   clientes,
@@ -23165,6 +23254,138 @@ function CarteiraCliente({
       color: 'var(--md-onv)'
     }
   }, h.para), " \u2022 ", h.motivo || '', " \u2022 ", h.por))));
+}
+function LimparCadastros({
+  clientes,
+  getClientData,
+  mods,
+  saveMods,
+  criarSnapshot,
+  showToast
+}) {
+  const [busy, setBusy] = useState(false);
+  const plano = useMemo(() => {
+    const at = clientes.map(c => ({
+      c,
+      d: getClientData(c)
+    }));
+    const cont = {};
+    at.forEach(({
+      d
+    }) => {
+      if (d.c && d.c !== 'CADASTRO PENDENTE') cont[d.c] = (cont[d.c] || 0) + 1;
+    });
+    const chave = x => cadNorm(x).replace(/\b(D|DO|DE|DA)\b/g, ' ').replace(/\s+/g, ' ').trim();
+    const melhor = {};
+    Object.keys(cont).forEach(c => {
+      const k = chave(c);
+      if (!melhor[k] || cont[c] > cont[melhor[k]]) melhor[k] = c;
+    });
+    const boas = Object.keys(cont).filter(c => !/^-|LTDA|PREFEITURA|\d/.test(c));
+    const out = [];
+    at.forEach(({
+      c,
+      d
+    }) => {
+      const ch = {};
+      const n = String(d.n || '');
+      const limpo = n.split(/\s{2,}/)[0].trim();
+      const resto = n.slice(limpo.length).trim();
+      if (limpo && resto && limpo.length >= 2 && resto.split(' ').length <= 2 && !/\d/.test(resto)) ch.n = limpo;
+      let cid = d.c || '';
+      if (/^-|LTDA|PREFEITURA/.test(cid)) {
+        const fim = boas.filter(b => cadNorm(cid).endsWith(cadNorm(b))).sort((a, b) => b.length - a.length)[0];
+        if (fim) cid = fim;else {
+          const w = cid.replace(/^-\s*/, '').trim().split(/\s+/);
+          for (let k = Math.floor(w.length / 2); k >= 1; k--) {
+            const suf = w.slice(-k).join(' ');
+            if (w.slice(0, -k).join(' ').endsWith(suf)) {
+              cid = suf;
+              break;
+            }
+          }
+        }
+      }
+      if (cid && cid !== 'CADASTRO PENDENTE' && melhor[chave(cid)] && melhor[chave(cid)] !== cid) cid = melhor[chave(cid)];
+      if (cid !== (d.c || '')) ch.c = cid;
+      if (Object.keys(ch).length) out.push({
+        id: c.i,
+        de: d,
+        ch
+      });
+    });
+    return out;
+  }, [clientes, getClientData]);
+  const aplicar = async () => {
+    setBusy(true);
+    try {
+      await criarSnapshot('Antes de limpar nomes/cidades');
+      const nm = {
+        ...mods
+      };
+      plano.forEach(x => {
+        nm[x.id] = {
+          ...(nm[x.id] || {}),
+          ...x.ch
+        };
+      });
+      await saveMods(nm);
+      showToast(`🧽 ${plano.length} cadastros limpos`, 'success');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return React.createElement("div", {
+    style: {
+      background: 'var(--md-s3)',
+      border: '1px solid var(--md-ov)',
+      borderRadius: 24,
+      padding: 22
+    }
+  }, React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600,
+      color: 'var(--md-on)'
+    }
+  }, "\uD83E\uDDFD Limpar nomes e cidades"), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: 'var(--md-mut)',
+      marginTop: 4
+    }
+  }, "Tira o nome do vendedor grudado no nome do cliente (\"STUDIO G   CIDINHA\"), corrige cidade com lixo e junta grafias diferentes da mesma cidade (usa a mais comum)."), !plano.length ? React.createElement("div", {
+    style: {
+      marginTop: 12,
+      fontSize: 13,
+      color: '#4ade80'
+    }
+  }, "\u2713 Nada para limpar.") : React.createElement(React.Fragment, null, React.createElement("div", {
+    style: {
+      maxHeight: 220,
+      overflowY: 'auto',
+      marginTop: 12,
+      fontSize: 12,
+      color: 'var(--md-onv)'
+    }
+  }, plano.map(x => React.createElement("div", {
+    key: x.id,
+    style: {
+      padding: '3px 0'
+    }
+  }, "#", x.id, " ", x.ch.n ? React.createElement(React.Fragment, null, x.de.n, " \u2192 ", React.createElement("b", null, x.ch.n)) : x.de.n, x.ch.c && React.createElement(React.Fragment, null, " \u2022 cidade ", x.de.c, " \u2192 ", React.createElement("b", null, x.ch.c))))), React.createElement("button", {
+    disabled: busy,
+    onClick: aplicar,
+    style: {
+      marginTop: 14,
+      padding: '0 22px',
+      background: 'var(--md-pc)',
+      border: 'none',
+      color: 'var(--md-onpc)',
+      fontSize: 13,
+      fontWeight: 600
+    }
+  }, busy ? 'Aplicando...' : `✅ Limpar ${plano.length} cadastro(s)`)));
 }
 const prodResolver = (alias, c) => {
   let k = String(c),
