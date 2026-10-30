@@ -2639,7 +2639,7 @@ function CRMPeteca() {
   };
   const exportBackup = async () => {
     try {
-      const backup = buildBackupData();
+      const backup = await buildBackupCompleto();
       const vendasExport = backup.vendas;
       const jsonStr = JSON.stringify(backup);
       const blob = new Blob([jsonStr], {
@@ -2648,7 +2648,7 @@ function CRMPeteca() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `crm_peteca_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `crm_peteca_backup_completo_${new Date().toISOString().slice(0, 10)}.json`;
       document.body.appendChild(a);
       a.click();
       setTimeout(() => {
@@ -2735,6 +2735,11 @@ function CRMPeteca() {
       if (nA) msgs.push(`${nA} mesclagens`);
     }
     if (data.metas && typeof data.metas === 'object') await salvarMetas(data.metas);
+    if (data.naoDuplicados && typeof data.naoDuplicados === 'object') await salvarNaoDup(data.naoDuplicados);
+    if (Array.isArray(data.mesclagens)) await salvarMesclagens(data.mesclagens);
+    if (data.carteiraOk && typeof data.carteiraOk === 'object') await salvarCarteiraConflOk(data.carteiraOk);
+    if (data.produtosCfg && typeof data.produtosCfg === 'object') await salvarProdCfg(data.produtosCfg);
+    if (data.nuvem) msgs.push('(carteira e Kanbans ficam na nuvem — não foram alterados)');
     return msgs;
   };
   const importBackup = e => {
@@ -2778,15 +2783,48 @@ function CRMPeteca() {
       if (Array.isArray(arr) && arr.length) vendasExport[mes] = arr;
     });
     return {
-      version: 3,
+      version: 4,
       date: new Date().toISOString(),
       clientes,
       mods,
       vendas: vendasExport,
       anotacoes,
       alias: aliasClientes,
-      metas: metasConfig
+      metas: metasConfig,
+      naoDuplicados: naoDup,
+      mesclagens,
+      carteiraOk: carteiraConflOk,
+      produtosCfg: prodCfg
     };
+  };
+  const buildBackupCompleto = async () => {
+    const data = buildBackupData();
+    try {
+      const R = q => window.PetecaSB.rest(q).catch(() => null);
+      const pag = async base => {
+        let out = [],
+          off = 0;
+        for (;;) {
+          const r = await R(base + '&limit=1000&offset=' + off);
+          if (!r || !r.length) break;
+          out = out.concat(r);
+          if (r.length < 1000) break;
+          off += 1000;
+        }
+        return out;
+      };
+      data.nuvem = {
+        carteira: await pag('carteira?select=*&order=cliente_id'),
+        carteira_historico: await pag('carteira_historico?select=*&order=id'),
+        kanbans: await pag('kanbans?select=*&order=criado_em'),
+        kanban_historico: await pag('kanban_historico?select=*&order=id'),
+        kanban_tags: (await R('kanban_tags?select=*')) || [],
+        perfis: (await R('perfis?select=nome,tipo,ativo')) || []
+      };
+    } catch (e) {
+      data.nuvemErro = String(e && e.message || e);
+    }
+    return data;
   };
   const contarVendas = d => Object.values(d.vendas || {}).reduce((s, a) => s + a.length, 0);
   useEffect(() => {
@@ -2908,7 +2946,7 @@ function CRMPeteca() {
       }
       setBkpDirStatus('granted');
       setAutoBkpRodando(true);
-      const data = buildBackupData();
+      const data = await buildBackupCompleto();
       const nV = contarVendas(data);
       if (nV === 0 || clientes.length < 100) {
         setAutoBkpRodando(false);
